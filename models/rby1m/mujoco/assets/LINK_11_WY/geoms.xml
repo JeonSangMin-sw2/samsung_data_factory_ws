@@ -1,4 +1,0 @@
-<mujoco>
-      <geom material="None" mesh="LINK_11_WY" class="visual"/>
-      <geom mesh="LINK_11_WY" class="collision"/>
-</mujoco>

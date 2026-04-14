@@ -6,9 +6,11 @@ import time
 import datetime
 import signal
 import threading
+import logging
 
 URDF_PATH = "/models/master_arm/model.urdf"
 LEADER_ARM_DEVICE_NAME = "/dev/rby1_master_arm"
+GRIPPER_DIRECTION = True
 
 class LeaderArm:
     DOF = 14
@@ -16,82 +18,61 @@ class LeaderArm:
     RIGHT_TOOL_ID = 0x80
     LEFT_TOOL_ID = 0x81
     TORQUE_SCALING = 0.46
+    MAXIMUM_TORQUE = 4.0
 
-    initialized_ = False
-    ctrl_running_ = False
-    is_running_ = False
-    state_updated_ = False
-    operating_mode_init_ = False
-
-    ev_ = rby.base.EventLoop()
-    ctrl_ev_ = rby.base.EventLoop()
-    torque_constant_ = {1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043,
-                        1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043} # Default torque constant
-
-    dyn_robot_ = rby.dynamics.LoadRobotFromURDF(URDF_PATH, "Base")
-    dyn_state_ = dyn_robot_.make_state(
-        ["Base", "Link_0R", "Link_1R", "Link_2R", "Link_3R", "Link_4R", "Link_5R", "Link_6R", "Link_0L", "Link_1L",
-         "Link_2L", "Link_3L", "Link_4L", "Link_5L", "Link_6L"],
-        ["J0_Shoulder_Pitch_R", "J1_Shoulder_Roll_R", "J2_Shoulder_Yaw_R", "J3_Elbow_R", "J4_Wrist_Yaw1_R",
-         "J5_Wrist_Pitch_R", "J6_Wrist_Yaw2_R", "J7_Shoulder_Pitch_L", "J8_Shoulder_Roll_L", "J9_Shoulder_Yaw_L",
-         "J10_Elbow_L", "J11_Wrist_Yaw1_L", "J12_Wrist_Pitch_L", "J13_Wrist_Yaw2_L"]
-    )
-    dyn_state_.set_gravity([0, 0, -9.81])
-
-    
-    active_ids_ = []
-    
-    state_ = State()
-    
-
-    control_ = ControlInput(self, state_)
-    
-    
     class State:
-        q_joint = np.zeros(DOF)
-        qvel_joint = np.zeros(DOF)
-        torque_joint = np.zeros(DOF)
-        gravity_term = np.zeros(DOF)
-        temperatures = np.zeros(DOF)
-        button_right = rby.DynamixelBus.ButtonState()
-        button_left = rby.DynamixelBus.ButtonState()
-        T_right = np.eye(4)
-        T_left = np.eye(4)
+        def __init__(self, dof):
+            self.q_joint = np.zeros(dof)
+            self.qvel_joint = np.zeros(dof)
+            self.torque_joint = np.zeros(dof)
+            self.gravity_term = np.zeros(dof)
+            self.operating_mode = np.full(dof, -1, dtype=int)
+            self.target_position = np.zeros(dof)
+            self.button_right = rby.DynamixelBus.ButtonState()
+            self.button_left = rby.DynamixelBus.ButtonState()
+            self.T_right = np.eye(4)
+            self.T_left = np.eye(4)
+            self.temperatures = np.zeros(dof)
 
     class ControlInput:
-        target_torque = np.zeros(DOF)
-        target_position = np.zeros(DOF)
-        target_torque = np.zeros(DOF)
-        
-    def __init__(self, dev_name):
+        def __init__(self, dof):
+            self.target_operating_mode = np.full(dof, -1, dtype=int)
+            self.target_position = np.zeros(dof)
+            self.target_torque = np.zeros(dof)
+
+    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME):
         self.bus = rby.DynamixelBus(dev_name)
-        self.control_period = 0.01
-        self.torque_constant = np.arrays([1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043,
+        self.control_period = 0.1
+        self.torque_constant = np.array([1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043,
                                          1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043])
         self.active_ids = []
         self.motor_ids = []
         self.tool_ids = [self.RIGHT_TOOL_ID, self.LEFT_TOOL_ID]
-        
+
         self.robot = None
         self.dyn_state = None
         self.is_running = False
         self.thread = None
         self.lock = threading.Lock()
-        
-        # State
-        self.q_joint = np.zeros(self.DOF)
-        self.qvel_joint = np.zeros(self.DOF)
-        self.torque_joint = np.zeros(self.DOF)
-        self.gravity_term = np.zeros(self.DOF)
-        self.temperatures = {}
-        self.button_right = rby.DynamixelBus.ButtonState()
-        self.button_left = rby.DynamixelBus.ButtonState()
+
+        self.initialized = False
+        self.operating_mode_init = False
+        self.state = self.State(self.DOF)
+        self.control_callback = None
+        self.model_path = URDF_PATH
+
     
     def SetControlPeriod(self, control_period):
         self.control_period = control_period
 
     def SetModelPath(self, model_path):
-        self.robot = rby.dynamics.LoadRobotFromURDF(model_path, "Base")
+        self.model_path = model_path
+        if self.is_running:
+            self._init_dynamics()
+
+    def _init_dynamics(self):
+        # Initialize robot kinematics and state
+        self.robot = rby.dynamics.LoadRobotFromURDF(self.model_path, "Base")
         self.dyn_state = self.robot.make_state(
             ["Base", "Link_0R", "Link_1R", "Link_2R", "Link_3R", "Link_4R", "Link_5R", "Link_6R", "Link_0L", "Link_1L",
              "Link_2L", "Link_3L", "Link_4L", "Link_5L", "Link_6L"],
@@ -102,41 +83,80 @@ class LeaderArm:
         self.dyn_state.set_gravity([0, 0, -9.81])
 
     def SetTorqueConstant(self, torque_constant):
-        self.torque_constant = torque_constant
+        self.torque_constant = np.array(torque_constant)
+        if self.initialized:
+            self.bus.set_torque_constant(self.torque_constant.tolist())
 
     def initialize(self, verbose=False):
         if not self.bus.open_port():
-            print("Failed to open port")
+            if verbose:
+                print("Failed to open the port!")
             return []
         if not self.bus.set_baud_rate(self.bus.kDefaultBaudrate):
-            print("Failed to set baud rate")
+            if verbose:
+                print("Failed to change the baudrate!")
             return []
-        
+
+        self.initialized = True
         self.active_ids = []
+        self.motor_ids = []
+
         for i in range(self.DOF):
             if self.bus.ping(i):
+                if verbose:
+                    print(f"Dynamixel ID {i} is active.")
                 self.active_ids.append(i)
                 self.motor_ids.append(i)
-                if verbose: print(f"Motor ID {i} is active")
-        
-        for i in self.tool_ids:
+            else:
+                if verbose:
+                    print(f"Dynamixel ID {i} is not active.")
+
+        for i in range(0x80, 0x80 + 2):
             if self.bus.ping(i):
+                if verbose:
+                    print(f"Dynamixel ID {i} is active.")
                 self.active_ids.append(i)
-                if verbose: print(f"Tool ID {i} is active")
-        
+            else:
+                if verbose:
+                    print(f"Dynamixel ID {i} is not active.")
+
+        if len(self.active_ids) != self.DEVICE_COUNT:
+            if verbose:
+                print(f"Unable to ping all devices for master arm. Found {len(self.active_ids)}/16")
+                print(f"active ids: {self.active_ids}")
+
         self.bus.set_torque_constant(self.torque_constant.tolist())
         return self.active_ids
 
     def start_control(self, callback):
+        if not self.initialized:
+            return False
+        if self.is_running:
+            return False
+
         self.is_running = True
-        self.callback = callback
+        self.control_callback = callback
+
+        # Load robot kinematics
+        self._init_dynamics()
+
         self.thread = threading.Thread(target=self._loop)
         self.thread.start()
+        return True
 
-    def stop_control(self):
+    def stop_control(self, torque_disable=False):
+        if not self.initialized or not self.is_running:
+            return False
+
         self.is_running = False
         if self.thread:
             self.thread.join()
+
+        if torque_disable:
+            self.DisableTorque()
+
+        self.control_callback = None
+        return True
 
     def EnableTorque(self):
         self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
@@ -145,55 +165,94 @@ class LeaderArm:
         self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
 
     def _loop(self):
-        # Initial mode setup
-        self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
-        self.bus.group_sync_write_operating_mode([(i, rby.DynamixelBus.CurrentControlMode) for i in self.motor_ids])
-        self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
+        # Initial operating mode setup
+        if not self.operating_mode_init:
+            self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
+            self.bus.group_sync_write_operating_mode([(i, rby.DynamixelBus.CurrentControlMode) for i in self.motor_ids])
+            self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
+            self.operating_mode_init = True
 
         while self.is_running:
             start_time = time.time()
-            
+
             # 1. Read Tool buttons
             for tid in self.tool_ids:
                 if tid in self.active_ids:
                     res = self.bus.read_button_status(tid)
                     if res:
                         _, state = res
-                        if tid == self.RIGHT_TOOL_ID: self.button_right = state
-                        else: self.button_left = state
+                        if tid == self.RIGHT_TOOL_ID:
+                            self.state.button_right = state
+                        else:
+                            self.state.button_left = state
 
-            # 2. Read Motor States
+            # 2. Read Operating Modes
+            temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_ids, True)
+            if temp_modes:
+                for mid, mode in temp_modes:
+                    if mid < self.DOF:
+                        self.state.operating_mode[mid] = mode
+            else:
+                continue
+
+            # 3. Read Motor States
             ms_list = self.bus.get_motor_states(self.motor_ids)
             if ms_list:
                 for mid, mstate in ms_list:
-                    self.q_joint[mid] = mstate.position
-                    self.qvel_joint[mid] = mstate.velocity
-                    self.torque_joint[mid] = mstate.current * self.torque_constant[mid]
-                    self.temperatures[mid] = mstate.temperature
+                    if mid < self.DOF:
+                        self.state.q_joint[mid] = mstate.position
+                        self.state.qvel_joint[mid] = mstate.velocity
+                        self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
+                        self.state.temperatures[mid] = mstate.temperature
             else:
-                continue # Skip loop if communication fails
+                continue
 
-            # 3. Compute Gravity
-            self.dyn_state.set_q(self.q_joint)
+            # 4. Read Goal Positions
+            temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.kAddrGoalPosition, 4)
+            if temp_gp:
+                for mid, val in temp_gp:
+                    if mid < self.DOF:
+                        self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
+            else:
+                continue
+
+            # 5. Compute Kinematics & Dynamics
+            self.dyn_state.set_q(self.state.q_joint)
             self.robot.compute_forward_kinematics(self.dyn_state)
-            self.gravity_term = self.robot.compute_gravity_term(self.dyn_state) * self.TORQUE_SCALING
+            self.state.gravity_term = self.robot.compute_gravity_term(self.dyn_state) * self.TORQUE_SCALING
 
-            # 4. User Callback
-            # Minimal state object for the callback
-            class StateMock:
-                pass
-            s = StateMock()
-            s.q_joint = self.q_joint
-            s.gravity_term = self.gravity_term
-            s.button_right = self.button_right
-            s.button_left = self.button_left
-            s.temperatures = self.temperatures
+            self.state.T_right = self.robot.compute_transformation(self.dyn_state, 0, 7)
+            self.state.T_left = self.robot.compute_transformation(self.dyn_state, 0, 14)
 
-            user_input = self.callback(s)
+            # 6. User Callback & Control
+            if self.control_callback:
+                user_input = self.control_callback(self.state)
 
-            # 5. Write Commands
-            # For simplicity in QC script, we only use current control
-            self.bus.group_sync_write_send_torque(list(enumerate(user_input.target_torque.tolist())))
+                changed_ids = []
+                changed_id_modes = []
+                id_position = []
+                id_torque = []
+
+                for i in range(self.DOF):
+                    if self.state.operating_mode[i] != user_input.target_operating_mode[i]:
+                        changed_ids.append(i)
+                        changed_id_modes.append((i, user_input.target_operating_mode[i]))
+                    else:
+                        if self.state.operating_mode[i] == rby.DynamixelBus.CurrentControlMode:
+                            id_torque.append((i, user_input.target_torque[i]))
+                        elif self.state.operating_mode[i] == rby.DynamixelBus.CurrentBasedPositionControlMode:
+                            id_torque.append((i, user_input.target_torque[i]))
+                            id_position.append((i, user_input.target_position[i]))
+
+                if changed_ids:
+                    self.bus.group_sync_write_torque_enable(changed_ids, 0)
+                    self.bus.group_sync_write_operating_mode(changed_id_modes)
+                    self.bus.group_sync_write_torque_enable(changed_ids, 1)
+
+                if id_torque:
+                    self.bus.group_sync_write_send_torque(id_torque)
+                if id_position:
+                    self.bus.group_sync_write_send_position(id_position)
 
             elapsed = time.time() - start_time
             sleep_time = self.control_period - elapsed
@@ -201,9 +260,7 @@ class LeaderArm:
                 time.sleep(sleep_time)
 
     def close(self):
-        self.stop_control()
-        if initialized_:
-            self.disable_torque()
+        self.stop_control(torque_disable=True)
 
 class Gripper:
     """
