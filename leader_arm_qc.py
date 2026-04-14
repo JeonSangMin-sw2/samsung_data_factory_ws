@@ -17,7 +17,7 @@ class File_Logger:
         log_dir = os.path.join(base_dir, "log")
         
         if filepath is None or filepath == "leader_arm_qc_log.txt":
-            now_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             self.filepath = os.path.join(log_dir, f"{now_str}.txt")
         else:
             self.filepath = os.path.join(log_dir, filepath)
@@ -41,13 +41,16 @@ def main(address, model):
         print("Error: Failed to power on 12V.")
         exit(1)
 
+    leader_arm = LeaderArm()
+
     def handler(signum, frame):
+        print("\nInterrupt received. Stopping...")
+        if leader_arm:
+            leader_arm.close()
         robot.power_off("12v")
         exit(1)
     
     signal.signal(signal.SIGINT, handler)
-
-    leader_arm = LeaderArm()
     leader_arm.initialize(verbose=True)
     
     if len(leader_arm.active_ids) != leader_arm.DEVICE_COUNT:
@@ -76,7 +79,7 @@ def main(address, model):
 
     time.sleep(100)
 
-    master_arm.stop_control()
+    leader_arm.stop_control()
 
 
 if __name__ == "__main__":

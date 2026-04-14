@@ -7,6 +7,7 @@ import datetime
 import signal
 import threading
 import logging
+import copy
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URDF_PATH = os.path.join(SCRIPT_DIR, "models", "model.urdf")
@@ -301,10 +302,11 @@ class LeaderArm:
         if self.control_callback and not self.ctrl_running_flag:
             self.ctrl_running_flag = True
             
-            # Note: In C++, they copy the state. In Python, we should at least capture the current values.
-            # For simplicity, we pass self.state, but if the control logic is slow and state changes, 
-            # it might be inconsistent. A better way would be data class or copy.
-            self.ctrl_ev.push_task(lambda: self._ctrl_task(self.state))
+            # Capturing a deepcopy of the state ensures that the control task 
+            # works with a consistent snapshot, avoiding race conditions 
+            # when _ev_task starts updating the state for the next cycle.
+            captured_state = copy.deepcopy(self.state)
+            self.ctrl_ev.push_task(lambda: self._ctrl_task(captured_state))
 
     def _ctrl_task(self, state):
         user_input = self.control_callback(state)
