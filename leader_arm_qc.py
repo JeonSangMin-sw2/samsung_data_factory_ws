@@ -15,10 +15,11 @@ class File_Logger:
     def __init__(self, filepath=None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         log_dir = os.path.join(base_dir, "log")
+        os.makedirs(log_dir, exist_ok=True)
         
         if filepath is None or filepath == "leader_arm_qc_log.txt":
             now_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.filepath = os.path.join(log_dir, f"{now_str}.txt")
+            self.filepath = os.path.join(log_dir, f"{now_str}_{filepath if filepath else 'log'}.txt")
         else:
             self.filepath = os.path.join(log_dir, filepath)
 
@@ -57,16 +58,25 @@ def main(address, model):
         print("Error: Mismatch in the number of devices detected for RBY Master Arm.")
         exit(1)
 
+    def fmt(arr):
+        return ", ".join([f"{x:7.3f}" for x in arr])
+
     def control(state: LeaderArm.State):
-        temperature = []
-        with np.printoptions(suppress=True, precision=3, linewidth=300):
-            print(f"--- {datetime.datetime.now().time()} ---")
-            print(f"q: {state.q_joint}")
-            print(f"temperature: {state.temperatures}")
-            print(f"g: {state.gravity_term}")
-            print(
-                f"right: {state.button_right.button}, left: {state.button_left.button}"
-            )
+        header = f"--- Leader Arm QC Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+        line_q = f"q (rad):      {fmt(state.q_joint)}"
+        line_temp = f"temp (C):     {fmt(state.temperatures)}"
+        line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
+        line_btn = f"buttons:      right: {state.button_right.button:1d}, left: {state.button_left.button:1d}"
+
+        print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
+        print(header)
+        print(line_q)
+        print(line_temp)
+        print(line_grav)
+        print(line_btn)
+
+        # Log to file
+        logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_grav}\n{line_btn}\n")
 
         input = LeaderArm.ControlInput()
 
