@@ -31,6 +31,7 @@ class File_Logger:
 
 
 def main(address, model):
+    logger = File_Logger()
     robot = rby.create_robot(address, model)
     robot.connect()
 
