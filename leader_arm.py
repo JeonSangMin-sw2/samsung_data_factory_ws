@@ -11,7 +11,7 @@ import copy
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URDF_PATH = os.path.join(SCRIPT_DIR, "models", "model.urdf")
-LEADER_ARM_DEVICE_NAME = "/dev/rby1_master_arm"
+LEADER_ARM_DEVICE_NAME = rby.upc.MasterArmDeviceName
 
 import queue
 
@@ -148,7 +148,8 @@ class LeaderArm:
 
     def _init_dynamics(self):
         # Initialize robot kinematics and state
-        self.robot = rby.dynamics.LoadRobotFromURDF(self.model_path, "Base")
+        config = rby.dynamics.load_robot_from_urdf(self.model_path, "Base")
+        self.robot = rby.dynamics.Robot(config)
         self.dyn_state = self.robot.make_state(
             ["Base", "Link_0R", "Link_1R", "Link_2R", "Link_3R", "Link_4R", "Link_5R", "Link_6R", "Link_0L", "Link_1L",
              "Link_2L", "Link_3L", "Link_4L", "Link_5L", "Link_6L"],
@@ -282,7 +283,7 @@ class LeaderArm:
             return
 
         # 4. Read Goal Positions
-        temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.kAddrGoalPosition, 4)
+        temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
         if temp_gp:
             for mid, val in temp_gp:
                 if mid < self.DOF:
