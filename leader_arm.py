@@ -41,6 +41,30 @@ class LeaderArm:
             self.T_left = np.eye(4)
             self.temperatures = np.zeros(dof, dtype=np.float64)
 
+        def copy(self):
+            # Create a simple snapshot of the state to avoid pickling issues with C++ objects
+            snapshot = LeaderArm.State(len(self.q_joint))
+            snapshot.q_joint = self.q_joint.copy()
+            snapshot.qvel_joint = self.qvel_joint.copy()
+            snapshot.torque_joint = self.torque_joint.copy()
+            snapshot.gravity_term = self.gravity_term.copy()
+            snapshot.operating_mode = self.operating_mode.copy()
+            snapshot.target_position = self.target_position.copy()
+            snapshot.T_right = self.T_right.copy()
+            snapshot.T_left = self.T_left.copy()
+            snapshot.temperatures = self.temperatures.copy()
+
+            # ButtonState capture (snapshot as simple objects with same interface)
+            class ButtonSnapshot:
+                def __init__(self, b, t):
+                    self.button = b
+                    self.trigger = t
+            
+            snapshot.button_right = ButtonSnapshot(self.button_right.button, self.button_right.trigger)
+            snapshot.button_left = ButtonSnapshot(self.button_left.button, self.button_left.trigger)
+            
+            return snapshot
+
     class ControlInput:
         def __init__(self, dof):
             self.target_operating_mode = np.full(dof, -1, dtype=int)
@@ -303,10 +327,10 @@ class LeaderArm:
         if self.control_callback and not self.ctrl_running_flag:
             self.ctrl_running_flag = True
             
-            # Capturing a deepcopy of the state ensures that the control task 
+            # Capturing a snapshot of the state ensures that the control task 
             # works with a consistent snapshot, avoiding race conditions 
             # when _ev_task starts updating the state for the next cycle.
-            captured_state = copy.deepcopy(self.state)
+            captured_state = self.state.copy()
             self.ctrl_ev.push_task(lambda: self._ctrl_task(captured_state))
 
     def _ctrl_task(self, state):
