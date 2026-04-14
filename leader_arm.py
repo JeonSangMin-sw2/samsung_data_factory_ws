@@ -28,7 +28,7 @@ class LeaderArm:
     kLeftLinkId = 14
 
     class State:
-        def __init__(self, dof):
+        def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
             self.qvel_joint = np.zeros(dof, dtype=np.float64)
             self.torque_joint = np.zeros(dof, dtype=np.float64)
@@ -43,7 +43,7 @@ class LeaderArm:
 
         def copy(self):
             # Create a simple snapshot of the state to avoid pickling issues with C++ objects
-            snapshot = LeaderArm.State(len(self.q_joint))
+            snapshot = type(self)(len(self.q_joint))
             snapshot.q_joint = self.q_joint.copy()
             snapshot.qvel_joint = self.qvel_joint.copy()
             snapshot.torque_joint = self.torque_joint.copy()
@@ -66,7 +66,7 @@ class LeaderArm:
             return snapshot
 
     class ControlInput:
-        def __init__(self, dof):
+        def __init__(self, dof=14):
             self.target_operating_mode = np.full(dof, -1, dtype=int)
             self.target_position = np.zeros(dof, dtype=np.float64)
             self.target_torque = np.zeros(dof, dtype=np.float64)
