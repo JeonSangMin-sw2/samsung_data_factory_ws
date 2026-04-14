@@ -134,6 +134,7 @@ class LeaderArm:
         self.state = self.State(self.DOF)
         self.control_callback = None
         self.model_path = URDF_PATH
+        self.is_running = False
 
     
     def SetControlPeriod(self, control_period):
@@ -165,7 +166,7 @@ class LeaderArm:
         if not self.bus.open_port():
             print("Failed to open the port!")
             return []
-        if not self.bus.set_baud_rate(self.bus.kDefaultBaudrate):
+        if not self.bus.set_baud_rate(self.bus.DefaultBaudrate):
             print("Failed to change the baudrate!")
             return []
 

@@ -48,7 +48,7 @@ def main(address, model):
     signal.signal(signal.SIGINT, handler)
 
     leader_arm = LeaderArm()
-    leader_arm.initialize()
+    leader_arm.initialize(verbose=True)
     
     if len(leader_arm.active_ids) != leader_arm.DEVICE_COUNT:
         print("Error: Mismatch in the number of devices detected for RBY Master Arm.")
