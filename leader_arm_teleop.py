@@ -134,8 +134,8 @@ class Gripper:
                 self.bus.group_sync_write_send_position(
                     [(dev_id, q) for dev_id, q in enumerate(self.target_q.tolist())]
                 )
-                print(f"Temperature_right: {self.bus.read_temperature(0)}")
-                print(f"Temperature_left: {self.bus.read_temperature(1)}")
+                # print(f"Temperature_right: {self.bus.read_temperature(0)}")
+                # print(f"Temperature_left: {self.bus.read_temperature(1)}")
             time.sleep(0.1)
 
     def set_target(self, normalized_q):
