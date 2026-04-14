@@ -285,8 +285,7 @@ def main(address, model, power, servo, control_mode):
     gripper.start()
 
     # ===== SETUP MASTER ARM =====
-    master_arm_model = f"{os.path.dirname(os.path.realpath(__file__))}/../../models/master_arm/model.urdf"
-    master_arm = LeaderArm(model_path=master_arm_model)
+    master_arm = LeaderArm()
     # Note: LeaderArm internal loop period is fixed at 1ms (1000Hz).
     active_ids = master_arm.initialize(verbose=True)
     # if len(active_ids) != rby.upc.MasterArm.DeviceCount:
