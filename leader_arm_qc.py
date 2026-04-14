@@ -6,6 +6,8 @@ import time
 import datetime
 import signal
 
+from leader_arm import LeaderArm
+
 URDF_PATH = "/models/master_arm/model.urdf"
 
 # 데이터를 텍스트 파일로 저장하는 클래스. 디버깅을 위함
@@ -42,41 +44,35 @@ def main(address, model):
     def handler(signum, frame):
         robot.power_off("12v")
         exit(1)
-
+    
     signal.signal(signal.SIGINT, handler)
 
-    rby.upc.initialize_device(rby.upc.MasterArmDeviceName)
-
-    master_arm_model = f"{os.path.dirname(os.path.realpath(__file__))}{URDF_PATH}"
-    master_arm = rby.upc.MasterArm(rby.upc.MasterArmDeviceName)
-    master_arm.set_model_path(master_arm_model)
-    master_arm.set_control_period(0.01)
-    active_ids = master_arm.initialize(verbose=True)
-    if len(active_ids) != rby.upc.MasterArm.DeviceCount:
+    leader_arm = LeaderArm()
+    leader_arm.initialize()
+    
+    if len(leader_arm.active_ids) != leader_arm.DEVICE_COUNT:
         print("Error: Mismatch in the number of devices detected for RBY Master Arm.")
         exit(1)
 
-    def control(state: rby.upc.MasterArm.State):
+    def control(state: LeaderArm.State):
         temperature = []
         with np.printoptions(suppress=True, precision=3, linewidth=300):
-            # for i in active_ids:
-            #     temperature.append(rby.DynamixelBus.read_temperature(i))
             print(f"--- {datetime.datetime.now().time()} ---")
             print(f"q: {state.q_joint}")
-            # print(f"temperature: {temperature}")
+            print(f"temperature: {state.temperatures}")
             print(f"g: {state.gravity_term}")
             print(
                 f"right: {state.button_right.button}, left: {state.button_left.button}"
             )
 
-        input = rby.upc.MasterArm.ControlInput()
+        input = LeaderArm.ControlInput()
 
         input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
         input.target_torque = state.gravity_term
 
         return input
 
-    master_arm.start_control(control)
+    leader_arm.start_control(control)
 
     time.sleep(100)
 
