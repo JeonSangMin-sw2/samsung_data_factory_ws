@@ -15,6 +15,7 @@ import threading
 import datetime
 from typing import *
 from dataclasses import dataclass
+from leader_arm import LeaderArm
 
 GRIPPER_DIRECTION = False
 
@@ -284,11 +285,9 @@ def main(address, model, power, servo, control_mode):
     gripper.start()
 
     # ===== SETUP MASTER ARM =====
-    rby.upc.initialize_device(rby.upc.MasterArmDeviceName)
     master_arm_model = f"{os.path.dirname(os.path.realpath(__file__))}/../../models/master_arm/model.urdf"
-    master_arm = rby.upc.MasterArm(rby.upc.MasterArmDeviceName)
-    master_arm.set_model_path(master_arm_model)
-    master_arm.set_control_period(Settings.master_arm_loop_period)
+    master_arm = LeaderArm(model_path=master_arm_model)
+    # Note: LeaderArm internal loop period is fixed at 1ms (1000Hz).
     active_ids = master_arm.initialize(verbose=True)
     # if len(active_ids) != rby.upc.MasterArm.DeviceCount:
     #     logging.error(
@@ -321,7 +320,7 @@ def main(address, model, power, servo, control_mode):
 
     log_count = 0
 
-    def master_arm_control_loop(state: rby.upc.MasterArm.State):
+    def master_arm_control_loop(state: LeaderArm.State):
         nonlocal position_mode, right_q, left_q, right_minimum_time, left_minimum_time, log_count
 
         if right_q is None:
@@ -329,7 +328,7 @@ def main(address, model, power, servo, control_mode):
         if left_q is None:
             left_q = state.q_joint[7:14]
 
-        ma_input = rby.upc.MasterArm.ControlInput()
+        ma_input = LeaderArm.ControlInput()
 
         log_count += 1
         if log_count % round(1 / Settings.master_arm_loop_period) == 0:
@@ -483,7 +482,8 @@ def main(address, model, power, servo, control_mode):
     # ===== SETUP SIGNAL =====
     def handler(signum, frame):
         robot.stop_state_update()
-        master_arm.stop_control()
+        if master_arm:
+            master_arm.close()
         robot.cancel_control()
         time.sleep(0.5)
 
