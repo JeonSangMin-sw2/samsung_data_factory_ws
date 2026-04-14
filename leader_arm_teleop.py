@@ -329,12 +329,12 @@ def main(address, model, power, servo, control_mode):
 
         ma_input = LeaderArm.ControlInput()
 
-        log_count += 1
-        if log_count % round(1 / Settings.master_arm_loop_period) == 0:
-            print(f"--- {datetime.datetime.now().time()} ---")
-            print(f"Button: {state.button_right.button}, {state.button_left.button}")
-            print(f"Trigger: {state.button_right.trigger}, {state.button_left.trigger}")
-            log_count = 0
+        # log_count += 1
+        # if log_count % round(1 / Settings.master_arm_loop_period) == 0:
+        #     print(f"--- {datetime.datetime.now().time()} ---")
+        #     print(f"Button: {state.button_right.button}, {state.button_left.button}")
+        #     print(f"Trigger: {state.button_right.trigger}, {state.button_left.trigger}")
+        #     log_count = 0
         gripper.set_target(
             np.array(
                 [state.button_right.trigger / 1000, state.button_left.trigger / 1000]
