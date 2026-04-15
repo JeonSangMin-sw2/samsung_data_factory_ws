@@ -66,6 +66,7 @@ def main(address, model):
         header = f"--- Leader Arm QC Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
         line_q = f"q (rad):      {fmt(state.q_joint)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
+        line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"buttons:      right: {state.button_right.button:1d}, left: {state.button_left.button:1d}"
 
@@ -73,11 +74,12 @@ def main(address, model):
         print(header)
         print(line_q)
         print(line_temp)
+        print(line_torque)
         print(line_grav)
         print(line_btn)
 
         # Log to file
-        logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_grav}\n{line_btn}\n")
+        logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
 
         input = LeaderArm.ControlInput()
 
