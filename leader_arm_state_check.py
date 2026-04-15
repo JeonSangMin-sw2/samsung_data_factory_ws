@@ -104,8 +104,8 @@ def main(address, model):
         return input
 
     def safety_function(state: LeaderArm.State):
-        failed_list = sorted(list(state.fault_ids))
-        error_msg = f"\n\n[CRITICAL ERROR] Communication failure detected: {failed_list}\nACTION: Immediate Emergency Shutdown.\n"
+        all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
+        error_msg = f"\n\n\033[1;31m[CRITICAL ERROR] Communication failure detected on IDs: {all_faults}\033[0m\nACTION: Immediate Emergency Shutdown.\n"
         print(error_msg)
         logger.save(error_msg)
         
