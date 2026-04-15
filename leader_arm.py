@@ -402,6 +402,7 @@ class LeaderArm:
                 self.tool_error_counts[tid] = 0 # Reset count on success
             else:
                 self.state.tool_warning_ids.append(tid) # Immediate warning for any slip
+                logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts[tid]+1})")
                 self.tool_error_counts[tid] += 1
                 if self.tool_error_counts[tid] >= self.MAX_TOOL_RETRIES:
                     self.state.tool_fault_ids.append(tid)
