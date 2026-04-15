@@ -39,7 +39,7 @@ class LeaderArm:
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
             'button_left', 'T_right', 'T_left', 'temperatures',
-            'fault_ids', 'tool_fault_ids'
+            'fault_ids', 'tool_fault_ids', 'tool_warning_ids'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -55,6 +55,7 @@ class LeaderArm:
             self.temperatures = np.zeros(dof, dtype=np.float64)
             self.fault_ids = []
             self.tool_fault_ids = []
+            self.tool_warning_ids = []
 
         def copy(self):
             # Create a shallow copy of the object structure
@@ -71,6 +72,7 @@ class LeaderArm:
             snapshot.temperatures = np.zeros(dof, dtype=np.float64)
             snapshot.fault_ids = []
             snapshot.tool_fault_ids = []
+            snapshot.tool_warning_ids = []
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -87,6 +89,7 @@ class LeaderArm:
             target.temperatures[:] = self.temperatures
             target.fault_ids = list(self.fault_ids)
             target.tool_fault_ids = list(self.tool_fault_ids)
+            target.tool_warning_ids = list(self.tool_warning_ids)
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -208,7 +211,7 @@ class LeaderArm:
         self.model_path = URDF_PATH
         self.is_running = False
         self.tool_error_counts = {tid: 0 for tid in self.tool_ids}
-        self.MAX_TOOL_RETRIES = 1 # 10 consecutive fails (~0.1s at 100Hz)
+        self.MAX_TOOL_RETRIES = 5 # 10 consecutive fails (~0.1s at 100Hz)
 
     
     def SetControlPeriod(self, control_period):
@@ -381,9 +384,11 @@ class LeaderArm:
         self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
 
     def _ev_task(self):
-        # 0. Reset faults for the current cycle
         self.state.fault_ids = []
         self.state.tool_fault_ids = []
+        self.state.tool_warning_ids = []
+        
+        # 1. Read Tool buttons (Auxiliary - Non-fatal until threshold)
 
         # 1. Read Tool buttons (Auxiliary - Non-fatal)
         for tid in self.active_tool_ids:
@@ -396,6 +401,7 @@ class LeaderArm:
                     self.state.button_left = bstate
                 self.tool_error_counts[tid] = 0 # Reset count on success
             else:
+                self.state.tool_warning_ids.append(tid) # Immediate warning for any slip
                 self.tool_error_counts[tid] += 1
                 if self.tool_error_counts[tid] >= self.MAX_TOOL_RETRIES:
                     self.state.tool_fault_ids.append(tid)
