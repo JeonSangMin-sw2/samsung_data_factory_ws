@@ -39,7 +39,7 @@ class LeaderArm:
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
             'button_left', 'T_right', 'T_left', 'temperatures',
-            'fault_ids', 'tool_fault_ids', 'tool_q'
+            'fault_ids', 'tool_fault_ids'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -55,7 +55,6 @@ class LeaderArm:
             self.temperatures = np.zeros(dof, dtype=np.float64)
             self.fault_ids = []
             self.tool_fault_ids = []
-            self.tool_q = np.array([0.0, 0.0]) # [R(128), L(129)] raw positions
 
         def copy(self):
             # Create a shallow copy of the object structure
@@ -72,7 +71,6 @@ class LeaderArm:
             snapshot.temperatures = np.zeros(dof, dtype=np.float64)
             snapshot.fault_ids = []
             snapshot.tool_fault_ids = []
-            snapshot.tool_q = np.array([0.0, 0.0])
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -89,7 +87,6 @@ class LeaderArm:
             target.temperatures[:] = self.temperatures
             target.fault_ids = list(self.fault_ids)
             target.tool_fault_ids = list(self.tool_fault_ids)
-            target.tool_q[:] = self.tool_q
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -248,6 +245,12 @@ class LeaderArm:
             self.bus.set_torque_constant(self.torque_constant.tolist())
 
     def initialize(self, verbose=False):
+        # Configure basic logging to ensure internal thread errors are visible in terminal
+        if verbose:
+            logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+        else:
+            logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
+
         # Set latency timer to 1ms for the serial device
         try:
             rby.upc.initialize_device(self.dev_name)
@@ -357,12 +360,14 @@ class LeaderArm:
         if not self.ctrl_session_active:
             return False
 
+        # 1. Disable torque first if requested (Highest priority)
+        if torque_disable:
+            self.DisableTorque()
+
+        # 2. Shutdown threads
         self.ctrl_session_active = False
         self.ev.stop()
         self.ctrl_ev.stop()
-
-        if torque_disable:
-            self.DisableTorque()
 
         self.control_callback = None
         return True
@@ -385,18 +390,8 @@ class LeaderArm:
                 _, bstate = res
                 if tid == self.RIGHT_MOTOR_ID:
                     self.state.button_right = bstate
-                    # Also read standard motor state for raw position
-                    ms_list = self.bus.get_motor_states([tid])
-                    if ms_list:
-                        _, mstate = ms_list[0]
-                        self.state.tool_q[0] = mstate.position
                 else:
                     self.state.button_left = bstate
-                    # Also read standard motor state for raw position
-                    ms_list = self.bus.get_motor_states([tid])
-                    if ms_list:
-                        _, mstate = ms_list[0]
-                        self.state.tool_q[1] = mstate.position
             else:
                 self.state.tool_fault_ids.append(tid)
 
@@ -442,7 +437,6 @@ class LeaderArm:
                     if mid < self.DOF:
                         self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
             else:
-                # If goal position read failed completely
                 self.state.fault_ids = list(self.motor_ids)
 
         # 5. Compute Kinematics & Dynamics
