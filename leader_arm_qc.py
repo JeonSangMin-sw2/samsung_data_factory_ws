@@ -8,7 +8,9 @@ import signal
 
 from leader_arm import LeaderArm
 
-URDF_PATH = "/models/master_arm/model.urdf"
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+POSITION_FILE = os.path.join(DATA_DIR, "position_list.npz")
+DEFAULT_WAIT_TIME = 5.0
 
 # 데이터를 텍스트 파일로 저장하는 클래스. 디버깅을 위함
 class File_Logger:
@@ -27,10 +29,43 @@ class File_Logger:
         with open(self.filepath, "a", encoding="utf-8") as f:
             f.write(str(content) + "\n")
 
+def save_positions(positions):
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+    np.savez(POSITION_FILE, positions=np.array(positions))
+    print(f"\n[Info] Saved {len(positions)} positions to {POSITION_FILE}")
 
+def load_positions():
+    if not os.path.exists(POSITION_FILE):
+        print(f"[Error] Position file not found: {POSITION_FILE}")
+        return None
+    data = np.load(POSITION_FILE)
+    return data['positions']
 
+def run_check_sequence(leader_arm, positions, wait_time):
+    print(f"\n--- Starting Status Check Sequence ({len(positions)} postures) ---")
+    active_ids = leader_arm.active_ids
+    
+    for i, pos in enumerate(positions):
+        print(f"\n[Check {i+1}/{len(positions)}] Moving to posture...")
+        leader_arm.set_target_position(pos)
+        
+        # Wait and check
+        start_time = time.time()
+        while time.time() - start_time < wait_time:
+            # Ping motors
+            for mid in active_ids:
+                if not leader_arm.bus.ping(mid):
+                    print(f"\n[Error] ID {mid} check failed during wait at posture {i+1}.")
+                    input("Press Enter to exit...")
+                    leader_arm.close()
+                    exit(1)
+            time.sleep(0.5)
+            print(".", end="", flush=True)
+    
+    print("\n\n--- Status Check Sequence Completed Successfully ---")
 
-def main(address, model):
+def main(address, model, mode):
     logger = File_Logger()
     robot = rby.create_robot(address, model)
     robot.connect()
@@ -44,9 +79,14 @@ def main(address, model):
         exit(1)
 
     leader_arm = LeaderArm(control_period=0.1)
+    
+    recorded_positions = []
+    last_btn_state = {'right': 0, 'left': 0}
 
     def handler(signum, frame):
         print("\nInterrupt received. Stopping...")
+        if mode == 'capture' and recorded_positions:
+            save_positions(recorded_positions)
         if leader_arm:
             leader_arm.close()
         robot.power_off("12v")
@@ -63,12 +103,27 @@ def main(address, model):
         return ", ".join([f"{x:7.3f}" for x in arr])
 
     def control(state: LeaderArm.State):
-        header = f"--- Leader Arm QC Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+        nonlocal last_btn_state
+        header = f"--- Leader Arm QC Monitor [{mode.upper()}] | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
         line_q = f"q (rad):      {fmt(state.q_joint)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"buttons:      right: {state.button_right.button:1d}, left: {state.button_left.button:1d}"
+
+        # Capture logic
+        if mode == 'capture':
+            curr_btn_right = state.button_right.button
+            curr_btn_left = state.button_left.button
+            
+            # Record on rising edge
+            if (curr_btn_right == 1 and last_btn_state['right'] == 0) or \
+               (curr_btn_left == 1 and last_btn_state['left'] == 0):
+                recorded_positions.append(state.q_joint.copy())
+                print(f"\n[Capture] Recorded position #{len(recorded_positions)}")
+            
+            last_btn_state['right'] = curr_btn_right
+            last_btn_state['left'] = curr_btn_left
 
         print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
         print(header)
@@ -77,30 +132,46 @@ def main(address, model):
         print(line_torque)
         print(line_grav)
         print(line_btn)
+        if mode == 'capture':
+            print(f"Captured:     {len(recorded_positions)}")
 
         # Log to file
         logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
 
-        input = LeaderArm.ControlInput()
+        input_data = LeaderArm.ControlInput()
+        input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
+        input_data.target_torque = state.gravity_term
 
-        input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
-        input.target_torque = state.gravity_term
+        return input_data
 
-        return input
+    if mode == 'capture':
+        leader_arm.start_control(control)
+        print("Capture mode active. Press any button to record posture. Ctrl+C to save and exit.")
+        while True:
+            time.sleep(1)
+    else: # check mode
+        positions = load_positions()
+        if positions is not None:
+            # We still start control to enable gravity compensation and monitoring
+            leader_arm.start_control(control)
+            run_check_sequence(leader_arm, positions, DEFAULT_WAIT_TIME)
+            leader_arm.stop_control()
+        else:
+            print("Check mode failed: No positions to check.")
 
-    leader_arm.start_control(control)
-
-    time.sleep(100)
-
-    leader_arm.stop_control()
+    leader_arm.close()
+    robot.power_off("12v")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="19_master_arm")
+    parser = argparse.ArgumentParser(description="Leader Arm QC Monitor")
     parser.add_argument("--address", type=str, required=True, help="Robot address")
     parser.add_argument(
         "--model", type=str, default="a", help="Robot Model Name (default: 'a')"
     )
+    parser.add_argument(
+        "--mode", type=str, default="check", choices=["check", "capture"], help="Operation mode: check (default) or capture"
+    )
     args = parser.parse_args()
 
-    main(address=args.address, model=args.model)
+    main(address=args.address, model=args.model, mode=args.mode)
