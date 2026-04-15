@@ -70,7 +70,7 @@ def main(address, model):
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
-
+        warning_msg = ""
         # 5. Status & Alarm Section (Fixed position at bottom)
         if state.fault_ids or state.tool_fault_ids:
             all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
@@ -78,6 +78,8 @@ def main(address, model):
         elif state.tool_warning_ids:
             # Transient warning (1-4 consecutive failures)
             status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ]\033[0m"
+            warning_msg = f"! [TOOL WARNING] Communication failure on IDs: {state.tool_fault_ids}"
+            logger.save(f"{warning_msg}\n")
         else:
             status_line = "\033[1;32mSTATUS: [ NORMAL ]\033[0m"
 
@@ -90,12 +92,7 @@ def main(address, model):
         print(line_grav)
         print(line_btn)
         print("\n" + status_line)
-
-        # Tool Warning
-        if state.tool_fault_ids:
-            warning_msg = f"! [TOOL WARNING] Communication failure on IDs: {state.tool_fault_ids}"
-            print(warning_msg)
-            logger.save(f"{warning_msg}\n")
+        print(warning_msg)
 
         # Log to file
         logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
