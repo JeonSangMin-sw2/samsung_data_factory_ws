@@ -90,6 +90,7 @@ def main(address, model, mode):
             return LeaderArm.ControlInput()
 
         header = f"--- Leader Arm QC Monitor [{mode.upper()}] | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+        line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
         line_q = f"q (rad):      {fmt(state.q_joint)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
@@ -117,6 +118,7 @@ def main(address, model, mode):
         if mode == 'check' and check_status['pos_idx'] >= 0:
             print(f"Status:       position {check_status['pos_idx'] + 1} is ok")
         
+        print(line_idx)
         print(line_q)
         print(line_temp)
         print(line_torque)
@@ -126,7 +128,7 @@ def main(address, model, mode):
             print(f"Captured:     {len(recorded_positions)}")
 
         # Log to file
-        logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
+        logger.save(f"{header}\n{line_idx}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
 
         input_data = LeaderArm.ControlInput()
         
@@ -161,20 +163,16 @@ def main(address, model, mode):
                 print(f"\n[Check {i+1}/{len(positions)}] Moving to posture...")
                 leader_arm.set_target_position(pos)
                 
-                # Wait and monitor
-                start_time = time.time()
-                while time.time() - start_time < DEFAULT_WAIT_TIME:
-                    # Periodically ping all motors to check health
-                    for mid in active_ids:
-                        if not leader_arm.bus.ping(mid):
-                            check_status['is_ok'] = False
-                            # Screen will stop updating via 'control' callback, allowing this message to persist
-                            print(f"\n\n[CRITICAL ERROR] ID {mid} connection check failed at posture {i+1}!")
-                            input("Press Enter to acknowledge and exit...")
-                            leader_arm.close()
-                            robot.power_off("12v")
-                            exit(1)
-                    time.sleep(0.5)
+                # Wait and monitor health
+                is_ok, failed_id = leader_arm.monitor_health(DEFAULT_WAIT_TIME)
+                if not is_ok:
+                    check_status['is_ok'] = False
+                    # Screen will stop updating via 'control' callback, allowing this message to persist
+                    print(f"\n\n[CRITICAL ERROR] ID {failed_id} connection check failed at posture {i+1}!")
+                    input("Press Enter to acknowledge and exit...")
+                    leader_arm.close()
+                    robot.power_off("12v")
+                    exit(1)
             
             leader_arm.stop_control()
             print("\n\n--- Status Check Sequence Completed Successfully ---")

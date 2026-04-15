@@ -172,7 +172,7 @@ class LeaderArm:
                     self._tasks.task_done()
 
     # LeaderArm class init function
-    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_temp=False, check_bus=True, check_transform=True):
+    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_temp=True, check_bus=True, check_transform=True):
         self.dev_name = dev_name
         self.bus = rby.DynamixelBus(dev_name)
         self.ev = self.EventLoop()
@@ -268,6 +268,19 @@ class LeaderArm:
                     logging.warning(f"Dynamixel ID {dev_id} is NOT active")
         
         return active_ids
+
+    def monitor_health(self, duration, interval=0.5):
+        """
+        Periodically pings all active motors for a given duration.
+        Returns (True, None) if all OK, or (False, failed_id) on first failure.
+        """
+        start_time = time.time()
+        while time.time() - start_time < duration:
+            for mid in self.active_ids:
+                if not self.bus.ping(mid):
+                    return False, mid
+            time.sleep(interval)
+        return True, None
 
     def set_target_position(self, q_target):
         if len(q_target) != self.DOF:

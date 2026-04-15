@@ -63,7 +63,8 @@ def main(address, model):
         return ", ".join([f"{x:7.3f}" for x in arr])
 
     def control(state: LeaderArm.State):
-        header = f"--- Leader Arm QC Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+        header = f"--- Leader Arm state Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+        line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
         line_q = f"q (rad):      {fmt(state.q_joint)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
@@ -72,6 +73,7 @@ def main(address, model):
 
         print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
         print(header)
+        print(line_idx)
         print(line_q)
         print(line_temp)
         print(line_torque)
