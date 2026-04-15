@@ -284,8 +284,8 @@ def main(address, model, power, servo, control_mode):
     gripper.homing()
     gripper.start()
 
-    # ===== SETUP MASTER ARM =====
-    master_arm = LeaderArm()
+    # ===== MASTER ARM SETUP =====
+    master_arm = LeaderArm(control_period=Settings.master_arm_loop_period, check_temp=False, check_bus=True, check_transform=True)
     # Note: LeaderArm internal loop period is fixed at 1ms (1000Hz).
     active_ids = master_arm.initialize(verbose=True)
     # if len(active_ids) != rby.upc.MasterArm.DeviceCount:
