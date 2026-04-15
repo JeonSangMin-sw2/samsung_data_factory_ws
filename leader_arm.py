@@ -408,7 +408,9 @@ class LeaderArm:
                     else:
                         self.state.temperatures[mid] = 0.0
         else:
-            return
+            # If motor state read failed completely
+            self.state.fault_ids = list(self.motor_ids)
+            # Proceed to section 6 (safety check) via early returns in next sections
 
         # 4. Read Goal Positions
         if self.bus_flag:
@@ -418,7 +420,8 @@ class LeaderArm:
                     if mid < self.DOF:
                         self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
             else:
-                return
+                # If goal position read failed completely
+                self.state.fault_ids = list(self.motor_ids)
 
         # 5. Compute Kinematics & Dynamics
         self.dyn_state.set_q(self.state.q_joint)
@@ -428,7 +431,7 @@ class LeaderArm:
         # self.state.gravity_term = np.clip(raw_gravity * self.TORQUE_SCALING, -self.MAXIMUM_TORQUE, self.MAXIMUM_TORQUE)
         self.state.gravity_term = self.robot.compute_gravity_term(self.dyn_state) * self.TORQUE_SCALING
         
-        if self.transform_flag:
+        if self.transform_flag and not self.state.fault_ids:
             self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
             self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
 
