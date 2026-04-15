@@ -38,7 +38,8 @@ class LeaderArm:
         __slots__ = [
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
-            'button_left', 'T_right', 'T_left', 'temperatures', 'fault_ids'
+            'button_left', 'T_right', 'T_left', 'temperatures',
+            'fault_ids', 'tool_fault_ids', 'tool_q'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -53,6 +54,8 @@ class LeaderArm:
             self.T_left = np.eye(4)
             self.temperatures = np.zeros(dof, dtype=np.float64)
             self.fault_ids = []
+            self.tool_fault_ids = []
+            self.tool_q = np.array([0.0, 0.0]) # [R(128), L(129)] raw positions
 
         def copy(self):
             # Create a shallow copy of the object structure
@@ -68,6 +71,8 @@ class LeaderArm:
             snapshot.target_position = np.zeros(dof, dtype=np.float64)
             snapshot.temperatures = np.zeros(dof, dtype=np.float64)
             snapshot.fault_ids = []
+            snapshot.tool_fault_ids = []
+            snapshot.tool_q = np.array([0.0, 0.0])
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -83,6 +88,8 @@ class LeaderArm:
             target.target_position[:] = self.target_position
             target.temperatures[:] = self.temperatures
             target.fault_ids = list(self.fault_ids)
+            target.tool_fault_ids = list(self.tool_fault_ids)
+            target.tool_q[:] = self.tool_q
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -192,8 +199,10 @@ class LeaderArm:
         self.torque_constant = np.array([1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043,
                                          1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043])
         self.active_ids = []
-        self.motor_ids = []
+        self.motor_ids = list(range(self.DOF))
         self.tool_ids = [self.RIGHT_MOTOR_ID, self.LEFT_MOTOR_ID]
+        self.active_joint_ids = [] # Dynamically set during initialize
+        self.active_tool_ids = []  # Dynamically set during initialize
 
         self.initialized = False
         self.operating_mode_init = False
@@ -255,6 +264,11 @@ class LeaderArm:
 
         self.initialized = True
         self.active_ids = self.check_motor_status(verbose)
+        
+        # Categorize detected IDs
+        self.active_joint_ids = [mid for mid in self.motor_ids if mid in self.active_ids]
+        self.active_tool_ids = [tid for tid in self.tool_ids if tid in self.active_ids]
+        
         self.bus.set_torque_constant(self.torque_constant.tolist())
         return self.active_ids
 
@@ -360,34 +374,45 @@ class LeaderArm:
         self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
 
     def _ev_task(self):
-        # 1. Read Tool buttons
-        for tid in self.tool_ids:
-            if tid in self.active_ids:
-                res = self.bus.read_button_status(tid)
-                if res:
-                    _, state = res
-                    if tid == self.RIGHT_MOTOR_ID:
-                        self.state.button_right = state
-                    else:
-                        self.state.button_left = state
+        # 0. Reset faults for the current cycle
+        self.state.fault_ids = []
+        self.state.tool_fault_ids = []
 
-        # 2. Read Operating Modes
-        self.state.fault_ids = [] # Reset faults for the current cycle
-        if self.bus_flag:
-            temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_ids, True)
+        # 1. Read Tool buttons (Auxiliary - Non-fatal)
+        for tid in self.active_tool_ids:
+            res = self.bus.read_button_status(tid)
+            if res:
+                _, bstate = res
+                if tid == self.RIGHT_MOTOR_ID:
+                    self.state.button_right = bstate
+                    # Also read standard motor state for raw position/temp
+                    mstate = self.bus.get_motor_state(tid)
+                    if mstate:
+                        self.state.tool_q[0] = mstate.position
+                else:
+                    self.state.button_left = bstate
+                    # Also read standard motor state for raw position
+                    mstate = self.bus.get_motor_state(tid)
+                    if mstate:
+                        self.state.tool_q[1] = mstate.position
+            else:
+                self.state.tool_fault_ids.append(tid)
+
+        # 2. Read Operating Modes (Joints Only - Critical)
+        if self.bus_flag and self.active_joint_ids:
+            temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_joint_ids, True)
             if temp_modes is not None:
-                if len(temp_modes) != len(self.active_ids):
+                if len(temp_modes) != len(self.active_joint_ids):
                     responded_ids = {mid for mid, _ in temp_modes}
-                    self.state.fault_ids = [mid for mid in self.active_ids if mid not in responded_ids]
+                    self.state.fault_ids = [mid for mid in self.active_joint_ids if mid not in responded_ids]
                 else:
                     for mid, mode in temp_modes:
                         if mid < self.DOF:
                             self.state.operating_mode[mid] = mode
             else:
-                # If everything failed, assume all active IDs are problematic
-                self.state.fault_ids = list(self.active_ids)
+                self.state.fault_ids = list(self.active_joint_ids)
 
-        # 3. Read Motor States
+        # 3. Read Motor States (Joints Only - Critical)
         if not self.state.fault_ids:
             ms_list = self.bus.get_motor_states(self.motor_ids)
             if ms_list:
@@ -405,7 +430,6 @@ class LeaderArm:
                             else:
                                 self.state.temperatures[mid] = 0.0
             else:
-                # If motor state read failed completely
                 self.state.fault_ids = list(self.motor_ids)
 
         # 4. Read Goal Positions

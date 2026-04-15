@@ -69,7 +69,8 @@ def main(address, model):
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
-        line_btn = f"buttons:      right: {state.button_right.button:1d}, left: {state.button_left.button:1d}"
+        line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
+        line_tool = f"TOOL  | L(129): Pos {state.tool_q[1]:5.1f} | R(128): Pos {state.tool_q[0]:5.1f}"
 
         print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
         print(header)
@@ -79,6 +80,13 @@ def main(address, model):
         print(line_torque)
         print(line_grav)
         print(line_btn)
+        print(line_tool)
+
+        # Tool Warning
+        if state.tool_fault_ids:
+            warning_msg = f"! [TOOL WARNING] Communication failure on IDs: {state.tool_fault_ids}"
+            print(warning_msg)
+            logger.save(f"{warning_msg}\n")
 
         # Log to file
         logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
