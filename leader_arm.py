@@ -375,45 +375,41 @@ class LeaderArm:
         self.state.fault_ids = [] # Reset faults for the current cycle
         if self.bus_flag:
             temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_ids, True)
-            if temp_modes:
-                # Check for missing IDs in real-time
+            if temp_modes is not None:
                 if len(temp_modes) != len(self.active_ids):
                     responded_ids = {mid for mid, _ in temp_modes}
                     self.state.fault_ids = [mid for mid in self.active_ids if mid not in responded_ids]
-                    return # Stop this update cycle due to communication failure
-                
-                for mid, mode in temp_modes:
-                    if mid < self.DOF:
-                        self.state.operating_mode[mid] = mode
+                else:
+                    for mid, mode in temp_modes:
+                        if mid < self.DOF:
+                            self.state.operating_mode[mid] = mode
             else:
                 # If everything failed, assume all active IDs are problematic
                 self.state.fault_ids = list(self.active_ids)
-                return
 
         # 3. Read Motor States
-        ms_list = self.bus.get_motor_states(self.motor_ids)
-        if ms_list:
-            if len(ms_list) != len(self.motor_ids):
-                responded_ids = {mid for mid, _ in ms_list}
-                self.state.fault_ids = [mid for mid in self.motor_ids if mid not in responded_ids]
-                return
-
-            for mid, mstate in ms_list:
-                if mid < self.DOF:
-                    self.state.q_joint[mid] = mstate.position
-                    self.state.qvel_joint[mid] = mstate.velocity
-                    self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
-                    if self.temp_flag:
-                        self.state.temperatures[mid] = mstate.temperature
-                    else:
-                        self.state.temperatures[mid] = 0.0
-        else:
-            # If motor state read failed completely
-            self.state.fault_ids = list(self.motor_ids)
-            # Proceed to section 6 (safety check) via early returns in next sections
+        if not self.state.fault_ids:
+            ms_list = self.bus.get_motor_states(self.motor_ids)
+            if ms_list:
+                if len(ms_list) != len(self.motor_ids):
+                    responded_ids = {mid for mid, _ in ms_list}
+                    self.state.fault_ids = [mid for mid in self.motor_ids if mid not in responded_ids]
+                else:
+                    for mid, mstate in ms_list:
+                        if mid < self.DOF:
+                            self.state.q_joint[mid] = mstate.position
+                            self.state.qvel_joint[mid] = mstate.velocity
+                            self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
+                            if self.temp_flag:
+                                self.state.temperatures[mid] = mstate.temperature
+                            else:
+                                self.state.temperatures[mid] = 0.0
+            else:
+                # If motor state read failed completely
+                self.state.fault_ids = list(self.motor_ids)
 
         # 4. Read Goal Positions
-        if self.bus_flag:
+        if self.bus_flag and not self.state.fault_ids:
             temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
             if temp_gp:
                 for mid, val in temp_gp:
