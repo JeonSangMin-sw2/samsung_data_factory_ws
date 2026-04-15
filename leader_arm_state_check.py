@@ -71,6 +71,12 @@ def main(address, model):
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
 
+        # 5. Status & Alarm Section (Fixed position at bottom)
+        status_line = "\033[1;32mSTATUS: [ NORMAL ]\033[0m"
+        if state.fault_ids or state.tool_fault_ids:
+            all_faults = list(state.fault_ids) + list(state.tool_fault_ids)
+            status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {all_faults} ]\033[0m"
+
         print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
         print(header)
         print(line_idx)
@@ -79,6 +85,7 @@ def main(address, model):
         print(line_torque)
         print(line_grav)
         print(line_btn)
+        print("\n" + status_line)
 
         # Tool Warning
         if state.tool_fault_ids:
