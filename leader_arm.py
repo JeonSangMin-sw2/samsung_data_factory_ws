@@ -179,9 +179,9 @@ class LeaderArm:
         self.dev_name = dev_name
         self.bus = rby.DynamixelBus(dev_name)
         self.ev = self.EventLoop()
-        self.ctrl_ev = self.EventLoop()
         self.control_period = control_period
-        self.ctrl_running_flag = False
+        self.ctrl_session_active = False # Tracks if start_control is active
+        self.ctrl_callback_busy = False   # Tracks if the callback is currently executing
         self.control_callback = None
         self.safety_function = None
         self.temp_flag = check_temp
@@ -312,12 +312,13 @@ class LeaderArm:
     def start_control(self, callback, safety_function=None):
         if not self.initialized:
             return False
-        if self.ctrl_running_flag: # Use ctrl_running_flag for consistency
+        if self.ctrl_session_active:
             return False
 
         self.control_callback = callback
         self.safety_function = safety_function
-        self.ctrl_running_flag = True
+        self.ctrl_session_active = True
+        self.ctrl_callback_busy = False
 
         # Load robot kinematics
         self._init_dynamics()
@@ -338,10 +339,10 @@ class LeaderArm:
         return True
 
     def stop_control(self, torque_disable=False):
-        if not self.is_running:
+        if not self.ctrl_session_active:
             return False
 
-        self.is_running = False
+        self.ctrl_session_active = False
         self.ev.stop()
         self.ctrl_ev.stop()
 
@@ -440,8 +441,8 @@ class LeaderArm:
                 print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {self.state.fault_ids}) but no safety_function is registered! Skipping cycle.")
             return
 
-        if self.control_callback and not self.ctrl_running_flag:
-            self.ctrl_running_flag = True
+        if self.control_callback and self.ctrl_session_active and not self.ctrl_callback_busy:
+            self.ctrl_callback_busy = True
             
             # Capturing a snapshot of the state ensures that the control task 
             # works with a consistent snapshot, avoiding race conditions 
@@ -450,7 +451,14 @@ class LeaderArm:
             self.ctrl_ev.push_task(lambda: self._ctrl_task(captured_state))
 
     def _ctrl_task(self, state):
-        user_input = self.control_callback(state)
+        try:
+            user_input = self.control_callback(state)
+            if user_input:
+                self._handle_control_input(user_input, state)
+        finally:
+            self.ctrl_callback_busy = False
+
+    def _handle_control_input(self, user_input, state):
 
         changed_ids = []
         changed_id_modes = []
