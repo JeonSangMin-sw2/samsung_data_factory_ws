@@ -160,15 +160,15 @@ class LeaderArm:
                     self._tasks.task_done()
 
     # LeaderArm class init function
-    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, check_temp=False, check_bus=True, check_kinematics=True):
+    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.1, check_temp=False, check_bus=True, check_transform=True):
         self.bus = rby.DynamixelBus(dev_name)
         self.ev = self.EventLoop()
         self.ctrl_ev = self.EventLoop()
-        self.control_period = 0.1
+        self.control_period = control_period
         self.ctrl_running_flag = False
         self.temp_flag = check_temp
         self.bus_flag = check_bus
-        self.kinematics_flag = check_kinematics
+        self.transform_flag = check_transform
 
         self.torque_constant = np.array([1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043,
                                          1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043])
@@ -193,8 +193,8 @@ class LeaderArm:
     def check_bus_state(self, enable: bool):
         self.bus_flag = enable
 
-    def check_kinematics_state(self, enable: bool):
-        self.kinematics_flag = enable
+    def check_transform_state(self, enable: bool):
+        self.transform_flag = enable
 
     def SetModelPath(self, model_path):
         self.model_path = model_path
@@ -370,7 +370,7 @@ class LeaderArm:
         self.robot.compute_forward_kinematics(self.dyn_state)
         self.state.gravity_term = self.robot.compute_gravity_term(self.dyn_state) * self.TORQUE_SCALING
         
-        if self.kinematics_flag:
+        if self.transform_flag:
             self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
             self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
 
