@@ -63,7 +63,8 @@ def main(address, model):
         return ", ".join([f"{x:7.3f}" for x in arr])
 
     def control(state: LeaderArm.State):
-        header = f"--- Leader Arm QC Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+        header = f"--- Leader Arm state Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+        line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
         line_q = f"q (rad):      {fmt(state.q_joint)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
@@ -72,6 +73,7 @@ def main(address, model):
 
         print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
         print(header)
+        print(line_idx)
         print(line_q)
         print(line_temp)
         print(line_torque)
@@ -88,7 +90,18 @@ def main(address, model):
 
         return input
 
-    leader_arm.start_control(control)
+    def safety_function(state: LeaderArm.State):
+        failed_list = sorted(list(state.fault_ids))
+        error_msg = f"\n\n[CRITICAL ERROR] Communication failure detected: {failed_list}\nACTION: Immediate Emergency Shutdown.\n"
+        print(error_msg)
+        logger.save(error_msg)
+        
+        if leader_arm:
+            leader_arm.close()
+        robot.power_off("12v")
+        os._exit(1)
+
+    leader_arm.start_control(control, safety_function=safety_function)
 
     time.sleep(100)
 

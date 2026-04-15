@@ -38,7 +38,7 @@ class LeaderArm:
         __slots__ = [
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
-            'button_left', 'T_right', 'T_left', 'temperatures'
+            'button_left', 'T_right', 'T_left', 'temperatures', 'fault_ids'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -52,6 +52,7 @@ class LeaderArm:
             self.T_right = np.eye(4)
             self.T_left = np.eye(4)
             self.temperatures = np.zeros(dof, dtype=np.float64)
+            self.fault_ids = []
 
         def copy(self):
             # Create a shallow copy of the object structure
@@ -66,6 +67,7 @@ class LeaderArm:
             snapshot.operating_mode = np.full(dof, -1, dtype=np.int64)
             snapshot.target_position = np.zeros(dof, dtype=np.float64)
             snapshot.temperatures = np.zeros(dof, dtype=np.float64)
+            snapshot.fault_ids = []
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -80,6 +82,7 @@ class LeaderArm:
             target.operating_mode[:] = self.operating_mode
             target.target_position[:] = self.target_position
             target.temperatures[:] = self.temperatures
+            target.fault_ids = list(self.fault_ids)
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -172,13 +175,15 @@ class LeaderArm:
                     self._tasks.task_done()
 
     # LeaderArm class init function
-    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_temp=False, check_bus=True, check_transform=True):
+    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_temp=True, check_bus=True, check_transform=True):
         self.dev_name = dev_name
         self.bus = rby.DynamixelBus(dev_name)
         self.ev = self.EventLoop()
         self.ctrl_ev = self.EventLoop()
         self.control_period = control_period
         self.ctrl_running_flag = False
+        self.control_callback = None
+        self.safety_function = None
         self.temp_flag = check_temp
         self.bus_flag = check_bus
         self.transform_flag = check_transform
@@ -269,6 +274,19 @@ class LeaderArm:
         
         return active_ids
 
+    def monitor_health(self, duration, interval=0.5):
+        """
+        Periodically pings all active motors for a given duration.
+        Returns (True, None) if all OK, or (False, failed_id) on first failure.
+        """
+        start_time = time.time()
+        while time.time() - start_time < duration:
+            for mid in self.active_ids:
+                if not self.bus.ping(mid):
+                    return False, mid
+            time.sleep(interval)
+        return True, None
+
     def set_target_position(self, q_target):
         if len(q_target) != self.DOF:
             logging.error(f"Target position length mismatch: expected {self.DOF}, got {len(q_target)}")
@@ -291,14 +309,15 @@ class LeaderArm:
         else:
             task()
         return True
-    def start_control(self, callback):
+    def start_control(self, callback, safety_function=None):
         if not self.initialized:
             return False
-        if self.is_running:
+        if self.ctrl_running_flag: # Use ctrl_running_flag for consistency
             return False
 
-        self.is_running = True
         self.control_callback = callback
+        self.safety_function = safety_function
+        self.ctrl_running_flag = True
 
         # Load robot kinematics
         self._init_dynamics()
@@ -351,18 +370,32 @@ class LeaderArm:
                         self.state.button_left = state
 
         # 2. Read Operating Modes
+        self.state.fault_ids = [] # Reset faults for the current cycle
         if self.bus_flag:
             temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_ids, True)
             if temp_modes:
+                # Check for missing IDs in real-time
+                if len(temp_modes) != len(self.active_ids):
+                    responded_ids = {mid for mid, _ in temp_modes}
+                    self.state.fault_ids = [mid for mid in self.active_ids if mid not in responded_ids]
+                    return # Stop this update cycle due to communication failure
+                
                 for mid, mode in temp_modes:
                     if mid < self.DOF:
                         self.state.operating_mode[mid] = mode
             else:
+                # If everything failed, assume all active IDs are problematic
+                self.state.fault_ids = list(self.active_ids)
                 return
 
         # 3. Read Motor States
         ms_list = self.bus.get_motor_states(self.motor_ids)
         if ms_list:
+            if len(ms_list) != len(self.motor_ids):
+                responded_ids = {mid for mid, _ in ms_list}
+                self.state.fault_ids = [mid for mid in self.motor_ids if mid not in responded_ids]
+                return
+
             for mid, mstate in ms_list:
                 if mid < self.DOF:
                     self.state.q_joint[mid] = mstate.position
@@ -398,6 +431,15 @@ class LeaderArm:
             self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
 
         # 6. User Callback & Control
+        if self.state.fault_ids:
+            if self.safety_function:
+                # Trigger user-defined safety behavior
+                self.safety_function(self.state)
+            else:
+                # Fallback: Print warning and stop current cycle if no safety handler is provided
+                print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {self.state.fault_ids}) but no safety_function is registered! Skipping cycle.")
+            return
+
         if self.control_callback and not self.ctrl_running_flag:
             self.ctrl_running_flag = True
             
