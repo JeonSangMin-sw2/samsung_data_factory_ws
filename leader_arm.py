@@ -230,11 +230,17 @@ class LeaderArm:
             self._init_dynamics()
 
     def _init_dynamics(self):
-        # Initialize robot kinematics and state directly from URDF
-        # load_robot_from_urdf returns the Robot object
-        self.robot = rby.dynamics.load_robot_from_urdf(self.model_path, "Base")
-        self.dyn_state = rby.dynamics.State(self.robot)
-        self.dyn_state.set_gravity([0, 0, -9.81])
+        # Initialize robot kinematics and state using the trusted factory pattern
+        config = rby.dynamics.load_robot_from_urdf(self.model_path, "Base")
+        self.robot = rby.dynamics.Robot(config)
+        self.dyn_state = self.robot.make_state(
+            ["Base", "Link_0R", "Link_1R", "Link_2R", "Link_3R", "Link_4R", "Link_5R", "Link_6R", "Link_0L", "Link_1L",
+             "Link_2L", "Link_3L", "Link_4L", "Link_5L", "Link_6L"],
+            ["J0_Shoulder_Pitch_R", "J1_Shoulder_Roll_R", "J2_Shoulder_Yaw_R", "J3_Elbow_R", "J4_Wrist_Yaw1_R",
+             "J5_Wrist_Pitch_R", "J6_Wrist_Yaw2_R", "J7_Shoulder_Pitch_L", "J8_Shoulder_Roll_L", "J9_Shoulder_Yaw_L",
+             "J10_Elbow_L", "J11_Wrist_Yaw1_L", "J12_Wrist_Pitch_L", "J13_Wrist_Yaw2_L"]
+        )
+        self.dyn_state.set_gravity([0, 0, 0, 0, 0, -9.81])
 
     def SetTorqueConstant(self, torque_constant):
         self.torque_constant = np.array(torque_constant)
@@ -444,13 +450,11 @@ class LeaderArm:
         self.robot.compute_forward_kinematics(self.dyn_state)
         
         # Calculate gravity term and apply scaling
-        # self.state.gravity_term = np.clip(raw_gravity * self.TORQUE_SCALING, -self.MAXIMUM_TORQUE, self.MAXIMUM_TORQUE)
         self.state.gravity_term = self.robot.compute_gravity_term(self.dyn_state) * self.TORQUE_SCALING
         
         if self.transform_flag and not self.state.fault_ids:
-            # Using link names is safer than indices if robot state is constructed differently
-            self.state.T_right = self.robot.compute_transformation(self.dyn_state, "Base", "Link_6R")
-            self.state.T_left = self.robot.compute_transformation(self.dyn_state, "Base", "Link_6L")
+            self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
+            self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
 
         # 6. User Callback & Control
         if self.state.fault_ids:
