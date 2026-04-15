@@ -90,7 +90,18 @@ def main(address, model):
 
         return input
 
-    leader_arm.start_control(control)
+    def safety_function(state: LeaderArm.State):
+        failed_list = sorted(list(state.fault_ids))
+        error_msg = f"\n\n[CRITICAL ERROR] Communication failure detected: {failed_list}\nACTION: Immediate Emergency Shutdown.\n"
+        print(error_msg)
+        logger.save(error_msg)
+        
+        if leader_arm:
+            leader_arm.close()
+        robot.power_off("12v")
+        os._exit(1)
+
+    leader_arm.start_control(control, safety_function=safety_function)
 
     time.sleep(100)
 
