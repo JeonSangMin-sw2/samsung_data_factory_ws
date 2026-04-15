@@ -207,6 +207,8 @@ class LeaderArm:
         self.control_callback = None
         self.model_path = URDF_PATH
         self.is_running = False
+        self.tool_error_counts = {tid: 0 for tid in self.tool_ids}
+        self.MAX_TOOL_RETRIES = 10 # 10 consecutive fails (~0.1s at 100Hz)
 
     
     def SetControlPeriod(self, control_period):
@@ -392,8 +394,11 @@ class LeaderArm:
                     self.state.button_right = bstate
                 else:
                     self.state.button_left = bstate
+                self.tool_error_counts[tid] = 0 # Reset count on success
             else:
-                self.state.tool_fault_ids.append(tid)
+                self.tool_error_counts[tid] += 1
+                if self.tool_error_counts[tid] >= self.MAX_TOOL_RETRIES:
+                    self.state.tool_fault_ids.append(tid)
 
         # 2. Read Operating Modes (Joints Only - Critical)
         if self.bus_flag and self.active_joint_ids:
