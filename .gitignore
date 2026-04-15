@@ -1,5 +1,7 @@
+__pycache__/
 .venv/
 *.txt
 *.pyc
-__pycache__/
+*.npz
+
 

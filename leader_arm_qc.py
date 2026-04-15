@@ -42,29 +42,6 @@ def load_positions():
     data = np.load(POSITION_FILE)
     return data['positions']
 
-def run_check_sequence(leader_arm, positions, wait_time):
-    print(f"\n--- Starting Status Check Sequence ({len(positions)} postures) ---")
-    active_ids = leader_arm.active_ids
-    
-    for i, pos in enumerate(positions):
-        print(f"\n[Check {i+1}/{len(positions)}] Moving to posture...")
-        leader_arm.set_target_position(pos)
-        
-        # Wait and check
-        start_time = time.time()
-        while time.time() - start_time < wait_time:
-            # Ping motors
-            for mid in active_ids:
-                if not leader_arm.bus.ping(mid):
-                    print(f"\n[Error] ID {mid} check failed during wait at posture {i+1}.")
-                    input("Press Enter to exit...")
-                    leader_arm.close()
-                    exit(1)
-            time.sleep(0.5)
-            print(".", end="", flush=True)
-    
-    print("\n\n--- Status Check Sequence Completed Successfully ---")
-
 def main(address, model, mode):
     logger = File_Logger()
     robot = rby.create_robot(address, model)
@@ -82,6 +59,9 @@ def main(address, model, mode):
     
     recorded_positions = []
     last_btn_state = {'right': 0, 'left': 0}
+    
+    # Shared state for monitoring and debugging
+    check_status = {'is_ok': True, 'pos_idx': -1}
 
     def handler(signum, frame):
         print("\nInterrupt received. Stopping...")
@@ -104,6 +84,11 @@ def main(address, model, mode):
 
     def control(state: LeaderArm.State):
         nonlocal last_btn_state
+        
+        # In check mode, skip printing if we detected a fault (to keep the error message visible)
+        if mode == 'check' and not check_status['is_ok']:
+            return LeaderArm.ControlInput()
+
         header = f"--- Leader Arm QC Monitor [{mode.upper()}] | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
         line_q = f"q (rad):      {fmt(state.q_joint)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
@@ -125,8 +110,13 @@ def main(address, model, mode):
             last_btn_state['right'] = curr_btn_right
             last_btn_state['left'] = curr_btn_left
 
-        print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
+        # Conditional Clearing and Printing
+        # print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
         print(header)
+        
+        if mode == 'check' and check_status['pos_idx'] >= 0:
+            print(f"Status:       position {check_status['pos_idx'] + 1} is ok")
+        
         print(line_q)
         print(line_temp)
         print(line_torque)
@@ -139,7 +129,13 @@ def main(address, model, mode):
         logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
 
         input_data = LeaderArm.ControlInput()
-        input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
+        
+        # Capture mode uses CurrentControlMode (gravity compensation)
+        if mode == 'capture':
+            input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
+        # Check mode: We do NOT force CurrentControlMode here to allow set_target_position 
+        # to correctly switch to CurrentBasedPositionControlMode without jitter.
+        
         input_data.target_torque = state.gravity_term
 
         return input_data
@@ -152,16 +148,41 @@ def main(address, model, mode):
     else: # check mode
         positions = load_positions()
         if positions is not None:
-            # We still start control to enable gravity compensation and monitoring
+            # Start control loop for monitoring and gravity compensation (using current position if idle)
             leader_arm.start_control(control)
-            run_check_sequence(leader_arm, positions, DEFAULT_WAIT_TIME)
+            
+            print(f"\n--- Starting Status Check Sequence ({len(positions)} postures) ---")
+            active_ids = leader_arm.active_ids
+            
+            for i, pos in enumerate(positions):
+                check_status['pos_idx'] = i
+                check_status['is_ok'] = True # Reset OK status for the new posture
+                
+                print(f"\n[Check {i+1}/{len(positions)}] Moving to posture...")
+                leader_arm.set_target_position(pos)
+                
+                # Wait and monitor
+                start_time = time.time()
+                while time.time() - start_time < DEFAULT_WAIT_TIME:
+                    # Periodically ping all motors to check health
+                    for mid in active_ids:
+                        if not leader_arm.bus.ping(mid):
+                            check_status['is_ok'] = False
+                            # Screen will stop updating via 'control' callback, allowing this message to persist
+                            print(f"\n\n[CRITICAL ERROR] ID {mid} connection check failed at posture {i+1}!")
+                            input("Press Enter to acknowledge and exit...")
+                            leader_arm.close()
+                            robot.power_off("12v")
+                            exit(1)
+                    time.sleep(0.5)
+            
             leader_arm.stop_control()
+            print("\n\n--- Status Check Sequence Completed Successfully ---")
         else:
             print("Check mode failed: No positions to check.")
 
     leader_arm.close()
     robot.power_off("12v")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Leader Arm QC Monitor")
