@@ -179,6 +179,7 @@ class LeaderArm:
         self.dev_name = dev_name
         self.bus = rby.DynamixelBus(dev_name)
         self.ev = self.EventLoop()
+        self.ctrl_ev = self.EventLoop()
         self.control_period = control_period
         self.ctrl_session_active = False # Tracks if start_control is active
         self.ctrl_callback_busy = False   # Tracks if the callback is currently executing
