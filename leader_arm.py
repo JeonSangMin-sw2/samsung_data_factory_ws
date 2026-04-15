@@ -22,6 +22,7 @@ class LeaderArm:
     DEVICE_COUNT = 16
     RIGHT_MOTOR_ID = 0x80
     LEFT_MOTOR_ID = 0x81
+    MAXIMUM_TORQUE = 0.5
     TORQUE_SCALING = 0.5
     kBaseLinkId = 0
     kRightLinkId = 7
@@ -53,9 +54,20 @@ class LeaderArm:
             self.temperatures = np.zeros(dof, dtype=np.float64)
 
         def copy(self):
-            # Optimization: Use shallow copy to avoid full __init__ allocation, 
-            # then use copy_to for efficient deep-copy of arrays.
+            # Create a shallow copy of the object structure
             snapshot = copy.copy(self)
+            
+            # Re-allocate unique arrays for the snapshot to prevent thread race conditions
+            dof = len(self.q_joint)
+            snapshot.q_joint = np.zeros(dof, dtype=np.float64)
+            snapshot.qvel_joint = np.zeros(dof, dtype=np.float64)
+            snapshot.torque_joint = np.zeros(dof, dtype=np.float64)
+            snapshot.gravity_term = np.zeros(dof, dtype=np.float64)
+            snapshot.operating_mode = np.full(dof, -1, dtype=np.int64)
+            snapshot.target_position = np.zeros(dof, dtype=np.float64)
+            snapshot.temperatures = np.zeros(dof, dtype=np.float64)
+            
+            # Copy data into new arrays
             self.copy_to(snapshot)
             return snapshot
 
@@ -67,22 +79,22 @@ class LeaderArm:
             target.gravity_term[:] = self.gravity_term
             target.operating_mode[:] = self.operating_mode
             target.target_position[:] = self.target_position
-            target.T_right[:] = self.T_right
-            target.T_left[:] = self.T_left
             target.temperatures[:] = self.temperatures
 
-            # Handle button snapshots (reuse existing objects if possible)
-            if isinstance(target.button_right, LeaderArm.ButtonSnapshot):
-                target.button_right.button = self.button_right.button
-                target.button_right.trigger = self.button_right.trigger
-            else:
-                target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
+            # Handle button snapshots (always create a new frozen snapshot for the state)
+            target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
+            target.button_left = LeaderArm.ButtonSnapshot(self.button_left.button, self.button_left.trigger)
 
-            if isinstance(target.button_left, LeaderArm.ButtonSnapshot):
-                target.button_left.button = self.button_left.button
-                target.button_left.trigger = self.button_left.trigger
+            # Transformation matrices (4x4 numpy arrays)
+            if target.T_right is not None:
+                target.T_right[:] = self.T_right
             else:
-                target.button_left = LeaderArm.ButtonSnapshot(self.button_left.button, self.button_left.trigger)
+                target.T_right = self.T_right.copy()
+            
+            if target.T_left is not None:
+                target.T_left[:] = self.T_left
+            else:
+                target.T_left = self.T_left.copy()
 
     class ControlInput:
         def __init__(self, dof=14):
@@ -160,7 +172,8 @@ class LeaderArm:
                     self._tasks.task_done()
 
     # LeaderArm class init function
-    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.1, check_temp=False, check_bus=True, check_transform=True):
+    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_temp=False, check_bus=True, check_transform=True):
+        self.dev_name = dev_name
         self.bus = rby.DynamixelBus(dev_name)
         self.ev = self.EventLoop()
         self.ctrl_ev = self.EventLoop()
@@ -220,6 +233,13 @@ class LeaderArm:
             self.bus.set_torque_constant(self.torque_constant.tolist())
 
     def initialize(self, verbose=False):
+        # Set latency timer to 1ms for the serial device
+        try:
+            rby.upc.initialize_device(self.dev_name)
+        except Exception as e:
+            if verbose:
+                logging.warning(f"Failed to initialize device latency: {e}")
+
         if not self.bus.open_port():
             print("Failed to open the port!")
             return []
@@ -368,6 +388,9 @@ class LeaderArm:
         # 5. Compute Kinematics & Dynamics
         self.dyn_state.set_q(self.state.q_joint)
         self.robot.compute_forward_kinematics(self.dyn_state)
+        
+        # Calculate gravity term and apply scaling
+        # self.state.gravity_term = np.clip(raw_gravity * self.TORQUE_SCALING, -self.MAXIMUM_TORQUE, self.MAXIMUM_TORQUE)
         self.state.gravity_term = self.robot.compute_gravity_term(self.dyn_state) * self.TORQUE_SCALING
         
         if self.transform_flag:
