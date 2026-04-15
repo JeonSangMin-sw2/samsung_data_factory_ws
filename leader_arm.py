@@ -208,7 +208,7 @@ class LeaderArm:
         self.model_path = URDF_PATH
         self.is_running = False
         self.tool_error_counts = {tid: 0 for tid in self.tool_ids}
-        self.MAX_TOOL_RETRIES = 10 # 10 consecutive fails (~0.1s at 100Hz)
+        self.MAX_TOOL_RETRIES = 1 # 10 consecutive fails (~0.1s at 100Hz)
 
     
     def SetControlPeriod(self, control_period):
