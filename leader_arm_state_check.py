@@ -43,7 +43,7 @@ def main(address, model):
         print("Error: Failed to power on 12V.")
         exit(1)
 
-    leader_arm = LeaderArm(control_period=0.1)
+    leader_arm = LeaderArm(control_period=0.01)
 
     def handler(signum, frame):
         print("\nInterrupt received. Stopping...")

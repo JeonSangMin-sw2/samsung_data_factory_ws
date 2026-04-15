@@ -55,7 +55,7 @@ def main(address, model, mode):
         print("Error: Failed to power on 12V.")
         exit(1)
 
-    leader_arm = LeaderArm(control_period=0.1)
+    leader_arm = LeaderArm(control_period=0.01)
     
     recorded_positions = []
     last_btn_state = {'right': 0, 'left': 0}
