@@ -451,13 +451,15 @@ class LeaderArm:
             self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
 
         # 6. User Callback & Control
-        if self.state.fault_ids:
+        # Treat both joint faults and tool faults as critical safety events
+        if self.state.fault_ids or self.state.tool_fault_ids:
             if self.safety_function:
-                # Trigger user-defined safety behavior
+                # Trigger user-defined safety behavior (e.g., Power Off)
                 self.safety_function(self.state)
             else:
-                # Fallback: Print warning and stop current cycle if no safety handler is provided
-                print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {self.state.fault_ids}) but no safety_function is registered! Skipping cycle.")
+                # Fallback: Print combined error and skip cycle
+                all_faults = self.state.fault_ids + self.state.tool_fault_ids
+                print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
             return
 
         if self.control_callback and self.ctrl_session_active and not self.ctrl_callback_busy:
