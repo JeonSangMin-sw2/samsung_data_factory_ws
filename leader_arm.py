@@ -27,13 +27,24 @@ class LeaderArm:
     kRightLinkId = 7
     kLeftLinkId = 14
 
+    class ButtonSnapshot:
+        __slots__ = ['button', 'trigger']
+        def __init__(self, b, t):
+            self.button = b
+            self.trigger = t
+
     class State:
+        __slots__ = [
+            'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
+            'operating_mode', 'target_position', 'button_right', 
+            'button_left', 'T_right', 'T_left', 'temperatures'
+        ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
             self.qvel_joint = np.zeros(dof, dtype=np.float64)
             self.torque_joint = np.zeros(dof, dtype=np.float64)
             self.gravity_term = np.zeros(dof, dtype=np.float64)
-            self.operating_mode = np.full(dof, -1, dtype=int)
+            self.operating_mode = np.full(dof, -1, dtype=np.int64)
             self.target_position = np.zeros(dof, dtype=np.float64)
             self.button_right = rby.DynamixelBus.ButtonState()
             self.button_left = rby.DynamixelBus.ButtonState()
@@ -42,28 +53,36 @@ class LeaderArm:
             self.temperatures = np.zeros(dof, dtype=np.float64)
 
         def copy(self):
-            # Create a simple snapshot of the state to avoid pickling issues with C++ objects
-            snapshot = type(self)(len(self.q_joint))
-            snapshot.q_joint = self.q_joint.copy()
-            snapshot.qvel_joint = self.qvel_joint.copy()
-            snapshot.torque_joint = self.torque_joint.copy()
-            snapshot.gravity_term = self.gravity_term.copy()
-            snapshot.operating_mode = self.operating_mode.copy()
-            snapshot.target_position = self.target_position.copy()
-            snapshot.T_right = self.T_right.copy()
-            snapshot.T_left = self.T_left.copy()
-            snapshot.temperatures = self.temperatures.copy()
-
-            # ButtonState capture (snapshot as simple objects with same interface)
-            class ButtonSnapshot:
-                def __init__(self, b, t):
-                    self.button = b
-                    self.trigger = t
-            
-            snapshot.button_right = ButtonSnapshot(self.button_right.button, self.button_right.trigger)
-            snapshot.button_left = ButtonSnapshot(self.button_left.button, self.button_left.trigger)
-            
+            # Optimization: Use shallow copy to avoid full __init__ allocation, 
+            # then use copy_to for efficient deep-copy of arrays.
+            snapshot = copy.copy(self)
+            self.copy_to(snapshot)
             return snapshot
+
+        def copy_to(self, target):
+            """Efficiently copies data into an existing State object to avoid allocations."""
+            target.q_joint[:] = self.q_joint
+            target.qvel_joint[:] = self.qvel_joint
+            target.torque_joint[:] = self.torque_joint
+            target.gravity_term[:] = self.gravity_term
+            target.operating_mode[:] = self.operating_mode
+            target.target_position[:] = self.target_position
+            target.T_right[:] = self.T_right
+            target.T_left[:] = self.T_left
+            target.temperatures[:] = self.temperatures
+
+            # Handle button snapshots (reuse existing objects if possible)
+            if isinstance(target.button_right, LeaderArm.ButtonSnapshot):
+                target.button_right.button = self.button_right.button
+                target.button_right.trigger = self.button_right.trigger
+            else:
+                target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
+
+            if isinstance(target.button_left, LeaderArm.ButtonSnapshot):
+                target.button_left.button = self.button_left.button
+                target.button_left.trigger = self.button_left.trigger
+            else:
+                target.button_left = LeaderArm.ButtonSnapshot(self.button_left.button, self.button_left.trigger)
 
     class ControlInput:
         def __init__(self, dof=14):
