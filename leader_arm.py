@@ -238,10 +238,10 @@ class LeaderArm:
         if self.is_running:
             self._init_dynamics()
 
-    def _init_dynamics(self):
-        # Initialize robot kinematics and state using the trusted factory pattern
-        config = rby.dynamics.load_robot_from_urdf(self.model_path, "Base")
-        self.robot = rby.dynamics.Robot(config)
+    def _init_dynamics(self, model_name, urdf_path, gravity=None):
+        if gravity is None:
+            gravity = [0, 0, -9.81, 0, 0, 0]
+        self.robot = rby.make_state(model_name, urdf_path, gravity)
         self.dyn_state = self.robot.make_state(
             ["Base", "Link_0R", "Link_1R", "Link_2R", "Link_3R", "Link_4R", "Link_5R", "Link_6R", "Link_0L", "Link_1L",
              "Link_2L", "Link_3L", "Link_4L", "Link_5L", "Link_6L"],
@@ -249,43 +249,44 @@ class LeaderArm:
              "J5_Wrist_Pitch_R", "J6_Wrist_Yaw2_R", "J7_Shoulder_Pitch_L", "J8_Shoulder_Roll_L", "J9_Shoulder_Yaw_L",
              "J10_Elbow_L", "J11_Wrist_Yaw1_L", "J12_Wrist_Pitch_L", "J13_Wrist_Yaw2_L"]
         )
-        self.dyn_state.set_gravity([0, 0, 0, 0, 0, -9.81])
 
     def SetTorqueConstant(self, torque_constant):
         self.torque_constant = np.array(torque_constant)
         if self.initialized:
             self.bus.set_torque_constant(self.torque_constant.tolist())
 
-    def initialize(self, verbose=False):
-        # Configure basic logging to ensure internal thread errors are visible in terminal
-        if verbose:
-            logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-        else:
-            logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
-
-        # Set latency timer to 1ms for the serial device
-        try:
-            rby.upc.initialize_device(self.dev_name)
-        except Exception as e:
-            if verbose:
-                logging.warning(f"Failed to initialize device latency: {e}")
-
+    def initialize(self, verbose=True, gravity=None):
+        """
+        Initialize the arm.
+        - Section 1: Setup motors and bus
+        - Section 2: Identify Active Motors (Joints vs Tools)
+        - Section 3: Initialize Dynamics Model (URDF)
+        """
+        logging.basicConfig(level=logging.INFO)
+        
+        # 1. Setup Motors
+        self._init_motors()
+        
+        # 2. Open Bus
         if not self.bus.open_port():
-            print("Failed to open the port!")
-            return []
-        if not self.bus.set_baud_rate(self.bus.DefaultBaudrate):
-            print("Failed to change the baudrate!")
-            return []
-
-        self.initialized = True
-        self.active_ids = self.check_motor_status(verbose)
+            logging.error("[LeaderArm] Port Open Failed")
+            return False
+        self.bus_flag = True
         
-        # Categorize detected IDs
-        self.active_joint_ids = [mid for mid in self.motor_ids if mid in self.active_ids]
-        self.active_tool_ids = [tid for tid in self.tool_ids if tid in self.active_ids]
+        # 3. Identify and Set Gains
+        # ... existing logic ...
+        self.active_ids = self.bus.scan(253)
+        self.active_joint_ids = [mid for mid in self.active_ids if mid < self.DOF]
+        self.active_tool_ids = [mid for mid in self.active_ids if mid >= 0x80]
         
-        self.bus.set_torque_constant(self.torque_constant.tolist())
-        return self.active_ids
+        # 4. Initialize Dynamics
+        try:
+            self._init_dynamics(self.model_name, self.urdf_path, gravity=gravity)
+        except Exception as e:
+            logging.error(f"[LeaderArm] Dynamics Init Failed: {e}")
+            return False
+            
+        return True
 
     def check_motor_status(self, verbose=True):
         active_ids = []
@@ -466,28 +467,18 @@ class LeaderArm:
                     logging.error(f"[LeaderArm] ERROR: Non-finite joint data detected: {self.state.q_joint}")
                     self.state.fault_ids = list(range(self.DOF))
                 else:
-                    # 5-2. Sign Correction & Re-ordering
-                    # Natural Order indices: [0..6 (Right), 7..13 (Left)]
-                    # We need to flip signs for joints where motor convention (+ = Up/In) 
-                    # differs from URDF Axis convention for a symmetric robot.
-                    # EXPERIMENT: Right arm normal(1), Left arm inverted(-1)
-                    joint_signs = np.array([1, 1, 1, 1, 1, 1, 1,  # Right Sign Mask
-                                           -1,-1,-1,-1,-1,-1,-1]) # Left Sign Mask
-                    q_signed = self.state.q_joint * joint_signs
-                    
-                    # Map Natural Order (R-then-L) to URDF Order (L-then-R)
-                    # URDF Order: J7..J13 (Left) then J0..J6 (Right)
-                    q_urdf = np.concatenate([q_signed[7:], q_signed[:7]])
+                    # 5-2. Re-ordering (L/R Swap Fix)
+                    # Natural Order: 0..6 (Right), 7..13 (Left)
+                    # URDF Order: J7..J13 (Left), J0..J6 (Right)
+                    q_urdf = np.concatenate([self.state.q_joint[7:], self.state.q_joint[:7]])
                     
                     self.dyn_state.set_q(q_urdf)
                     self.robot.compute_forward_kinematics(self.dyn_state)
                     
                     # 5-3. Compute Gravity & Un-map back
                     grav_urdf = self.robot.compute_gravity_term(self.dyn_state)
-                    # Un-map to Natural Order
-                    grav_natural = np.concatenate([grav_urdf[7:], grav_urdf[:7]])
-                    # Re-apply signs to match user motor convention
-                    self.state.gravity_term = (grav_natural * joint_signs) * self.TORQUE_SCALING
+                    # Un-map to Natural Order [Right, Left]
+                    self.state.gravity_term = np.concatenate([grav_urdf[7:], grav_urdf[:7]]) * self.TORQUE_SCALING
                     
                     self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
                     self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)

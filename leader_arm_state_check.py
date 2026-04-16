@@ -52,11 +52,16 @@ def main(address, model):
         robot.power_off("12v")
         exit(1)
     
-    signal.signal(signal.SIGINT, handler)
-    leader_arm.initialize(verbose=True)
+    # 5-degree backward tilt compensation (gx = -9.81 * sin(5))
+    # SDK 6D Gravity Convention: [Angular(3), Linear(3)]
+    calibrated_gravity = [0, 0, 0, -0.85, 0, -9.77]
     
+    if not leader_arm.initialize(gravity=calibrated_gravity):
+        print("Failed to initialize Leader Arm")
+        exit(1)
+        
     if len(leader_arm.active_ids) != leader_arm.DEVICE_COUNT:
-        print("Error: Mismatch in the number of devices detected for RBY Master Arm.")
+        print(f"Error: Mismatch in the number of devices detected. Expected {leader_arm.DEVICE_COUNT}, got {len(leader_arm.active_ids)}")
         exit(1)
 
     def fmt(arr):
