@@ -546,15 +546,21 @@ class LeaderArm:
         self.ctrl_running_flag = False
 
     def _write_task(self, changed_ids, changed_id_modes, id_torque, id_position):
-        if changed_ids:
-            self.bus.group_sync_write_torque_enable(changed_ids, 0)
-            self.bus.group_sync_write_operating_mode(changed_id_modes)
-            self.bus.group_sync_write_torque_enable(changed_ids, 1)
+        try:
+            if changed_ids:
+                self.bus.group_sync_write_torque_enable(changed_ids, 0)
+                self.bus.group_sync_write_operating_mode(changed_id_modes)
+                self.bus.group_sync_write_torque_enable(changed_ids, 1)
 
-        if id_torque:
-            self.bus.group_sync_write_send_torque(id_torque)
-        if id_position:
-            self.bus.group_sync_write_send_position(id_position)
+            if id_torque:
+                self.bus.group_sync_write_send_torque(id_torque)
+            if id_position:
+                self.bus.group_sync_write_send_position(id_position)
+        except Exception as e:
+            logging.error(f"[LeaderArm] EXCEPTION IN WRITE TASK: {e}")
+            if self.safety_function:
+                self.safety_function(self.state)
+            raise e
 
     def close(self):
         self.stop_control(torque_disable=True)

@@ -106,22 +106,22 @@ def main(address, model):
         else:
             status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
 
-        print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
-        print(header)
-        print("-" * len(header))
-        print(line_idx)
-        print(line_q)
-        print(line_current)
-        print(line_temp)
-        print(line_torque)
-        print(line_grav)
-        print(line_btn)
-        print("\n" + status_line)
+        print("\033[H\033[J", end="", flush=True)  # Clear terminal and move cursor to top
+        print(header, flush=True)
+        print("-" * len(header), flush=True)
+        print(line_idx, flush=True)
+        print(line_q, flush=True)
+        print(line_current, flush=True)
+        print(line_temp, flush=True)
+        print(line_torque, flush=True)
+        print(line_grav, flush=True)
+        print(line_btn, flush=True)
+        print("\n" + status_line, flush=True)
 
         # Tool Warning
         if state.tool_fault_ids:
             warning_msg = f"! [TOOL WARNING] Communication failure on IDs: {state.tool_fault_ids}"
-            print(warning_msg)
+            print(warning_msg, flush=True)
             logger.save(f"{warning_msg}\n")
 
         # Log to file
@@ -135,14 +135,34 @@ def main(address, model):
         return input
 
     def safety_function(state: LeaderArm.State):
+        import sys
+        
+        # Flush all pending logs first
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
-        error_msg = f"\n\n\033[1;31m[CRITICAL ERROR] Communication failure detected on IDs: {all_faults}\033[0m\nACTION: Immediate Emergency Shutdown.\n"
-        print(error_msg)
+        error_msg = f"\n\n\033[1;31m[CRITICAL ERROR / EXCEPTION DETECTED]\033[0m\n"
+        if all_faults:
+            error_msg += f"Communication failure on IDs: {all_faults}\n"
+        error_msg += "ACTION: Immediate Emergency Shutdown (Power Off 12V).\n"
+        
+        print(error_msg, flush=True)
         logger.save(error_msg)
         
+        # Priority 1: Hardware Safety
+        try:
+            robot.power_off("12v")
+        except:
+            pass
+            
+        # Priority 2: Cleanup
         if leader_arm:
-            leader_arm.close()
-        robot.power_off("12v")
+            leader_arm.stop_control(torque_disable=True)
+            
+        print("Shutdown complete. Exiting.", flush=True)
+        sys.stdout.flush()
+        time.sleep(0.5) # Critical delay to ensure terminal displays the message
         os._exit(1)
 
     leader_arm.start_control(control, safety_function=safety_function)
