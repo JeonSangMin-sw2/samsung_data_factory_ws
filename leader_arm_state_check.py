@@ -165,11 +165,21 @@ def main(address, model):
         time.sleep(0.5) # Critical delay to ensure terminal displays the message
         os._exit(1)
 
-    leader_arm.start_control(control, safety_function=safety_function)
-
-    time.sleep(100)
-
-    leader_arm.stop_control()
+    try:
+        leader_arm.start_control(control, safety_function=safety_function)
+        while leader_arm.ctrl_session_active:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nKeyboardInterrupt detected. Stopping...")
+    finally:
+        print("Shutting down Leader Arm engine...")
+        leader_arm.stop_control(torque_disable=True)
+        print("Powering off 12V...")
+        try:
+            robot.power_off("12v")
+        except:
+            pass
+        print("System shutdown complete.")
 
 
 if __name__ == "__main__":
