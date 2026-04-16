@@ -449,15 +449,15 @@ class LeaderArm:
                 else:
                     self.state.fault_ids = list(self.motor_ids)
 
-            # 4. Read Goal Positions
-            if self.bus_flag and not self.state.fault_ids:
-                temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
-                if temp_gp:
-                    for mid, val in temp_gp:
-                        if mid < self.DOF:
-                            self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
-                else:
-                    self.state.fault_ids = list(self.motor_ids)
+            # 4. Read Goal Positions - Removed to prevent overwriting user commands
+            # if self.bus_flag and not self.state.fault_ids:
+            #     temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
+            #     if temp_gp:
+            #         for mid, val in temp_gp:
+            #             if mid < self.DOF:
+            #                 self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
+            #     else:
+            #         self.state.fault_ids = list(self.motor_ids)
 
             # 5. Compute Kinematics & Dynamics
             if not self.state.fault_ids:
