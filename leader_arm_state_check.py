@@ -62,29 +62,54 @@ def main(address, model):
     def fmt(arr):
         return ", ".join([f"{x:7.3f}" for x in arr])
 
+    # Session statistics for persistent monitoring
+    session_stats = {
+        "total_warnings": 0,
+        "max_streak": 0,
+        "has_warned_once": False
+    }
+
     def control(state: LeaderArm.State):
+        nonlocal session_stats
+        
+        # Update statistics
+        if state.tool_warning_ids:
+            session_stats["total_warnings"] += 1
+            session_stats["has_warned_once"] = True
+            
+        current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
+        if current_max_streak > session_stats["max_streak"]:
+            session_stats["max_streak"] = current_max_streak
+
         header = f"--- Leader Arm state Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
         line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
         line_q = f"q (rad):      {fmt(state.q_joint)}"
+        line_current = f"current (A):  {fmt(state.current)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
 
         # 5. Status & Alarm Section (Fixed position at bottom)
+        stats_part = f"(Total Warns: {session_stats['total_warnings']}, Max Streak: {session_stats['max_streak']})"
+        
         if state.fault_ids or state.tool_fault_ids:
             all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
-            status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {all_faults} ]\033[0m"
+            status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {all_faults} ] {stats_part}\033[0m"
         elif state.tool_warning_ids:
-            # Transient warning (1-4 consecutive failures)
-            status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ]\033[0m"
+            status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ] {stats_part}\033[0m"
+        elif session_stats["has_warned_once"]:
+            # Maintain yellow status if it ever warned, but set label to RECOVERED or keep WARNING info
+            status_line = f"\033[1;33mSTATUS: [ PAST WARNINGS DETECTED ] {stats_part}\033[0m"
         else:
-            status_line = "\033[1;32mSTATUS: [ NORMAL ]\033[0m"
+            status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
 
         print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
         print(header)
+        print("-" * len(header))
         print(line_idx)
         print(line_q)
+        print(line_current)
         print(line_temp)
         print(line_torque)
         print(line_grav)
@@ -98,7 +123,7 @@ def main(address, model):
             logger.save(f"{warning_msg}\n")
 
         # Log to file
-        logger.save(f"{header}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n, {status_line}\n")
+        logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{status_line}\n")
 
         input = LeaderArm.ControlInput()
 

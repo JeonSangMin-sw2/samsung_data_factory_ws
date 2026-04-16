@@ -39,7 +39,8 @@ class LeaderArm:
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
             'button_left', 'T_right', 'T_left', 'temperatures',
-            'fault_ids', 'tool_fault_ids', 'tool_warning_ids'
+            'fault_ids', 'tool_fault_ids', 'tool_warning_ids', 'current',
+            'tool_error_counts'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -56,6 +57,8 @@ class LeaderArm:
             self.fault_ids = []
             self.tool_fault_ids = []
             self.tool_warning_ids = []
+            self.current = np.zeros(dof, dtype=np.float64)
+            self.tool_error_counts = {}
 
         def copy(self):
             # Create a shallow copy of the object structure
@@ -73,6 +76,8 @@ class LeaderArm:
             snapshot.fault_ids = []
             snapshot.tool_fault_ids = []
             snapshot.tool_warning_ids = []
+            snapshot.current = np.zeros(dof, dtype=np.float64)
+            snapshot.tool_error_counts = {}
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -90,6 +95,8 @@ class LeaderArm:
             target.fault_ids = list(self.fault_ids)
             target.tool_fault_ids = list(self.tool_fault_ids)
             target.tool_warning_ids = list(self.tool_warning_ids)
+            target.current[:] = self.current
+            target.tool_error_counts = dict(self.tool_error_counts)
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -433,6 +440,7 @@ class LeaderArm:
                         if mid < self.DOF:
                             self.state.q_joint[mid] = mstate.position
                             self.state.qvel_joint[mid] = mstate.velocity
+                            self.state.current[mid] = mstate.current
                             self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
                             if self.temp_flag:
                                 self.state.temperatures[mid] = mstate.temperature
@@ -462,7 +470,9 @@ class LeaderArm:
             self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
             self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
 
-        # 6. User Callback & Control
+        # 6. Safety Check & Control
+        self.state.tool_error_counts = dict(self.tool_error_counts)
+
         # Treat both joint faults and tool faults as critical safety events
         if self.state.fault_ids or self.state.tool_fault_ids:
             if self.safety_function:
