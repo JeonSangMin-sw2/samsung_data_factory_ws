@@ -238,10 +238,8 @@ class LeaderArm:
         if self.is_running:
             self._init_dynamics()
 
-    def _init_dynamics(self, model_name, urdf_path, gravity=None):
-        if gravity is None:
-            gravity = [0, 0, -9.81, 0, 0, 0]
-        self.robot = rby.make_state(model_name, urdf_path, gravity)
+    def _init_dynamics(self, model_name, urdf_path):
+        self.robot = rby.make_state(model_name, urdf_path, [0, 0, 0, 0, 0, -9.81])
         self.dyn_state = self.robot.make_state(
             ["Base", "Link_0R", "Link_1R", "Link_2R", "Link_3R", "Link_4R", "Link_5R", "Link_6R", "Link_0L", "Link_1L",
              "Link_2L", "Link_3L", "Link_4L", "Link_5L", "Link_6L"],
@@ -250,39 +248,29 @@ class LeaderArm:
              "J10_Elbow_L", "J11_Wrist_Yaw1_L", "J12_Wrist_Pitch_L", "J13_Wrist_Yaw2_L"]
         )
 
-    def SetTorqueConstant(self, torque_constant):
-        self.torque_constant = np.array(torque_constant)
-        if self.initialized:
-            self.bus.set_torque_constant(self.torque_constant.tolist())
-
-    def initialize(self, verbose=True, gravity=None):
+    def initialize(self, verbose=True):
         """
         Initialize the arm.
-        - Section 1: Setup motors and bus
-        - Section 2: Identify Active Motors (Joints vs Tools)
-        - Section 3: Initialize Dynamics Model (URDF)
         """
         logging.basicConfig(level=logging.INFO)
-        
-        # 2. Open Bus
         if not self.bus.open_port():
             logging.error("[LeaderArm] Port Open Failed")
             return False
         self.bus_flag = True
         
-        # 3. Identify and Set Gains
-        # ... existing logic ...
+        # Identify Active Motors
         self.active_ids = self.bus.scan(253)
         self.active_joint_ids = [mid for mid in self.active_ids if mid < self.DOF]
         self.active_tool_ids = [mid for mid in self.active_ids if mid >= 0x80]
         
-        # 4. Initialize Dynamics
+        # Initialize Dynamics
         try:
-            self._init_dynamics(self.model_name, self.urdf_path, gravity=gravity)
+            self._init_dynamics(self.model_name, self.urdf_path)
         except Exception as e:
             logging.error(f"[LeaderArm] Dynamics Init Failed: {e}")
             return False
             
+        self.initialized = True
         return True
 
     def check_motor_status(self, verbose=True):
