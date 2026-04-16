@@ -264,9 +264,6 @@ class LeaderArm:
         """
         logging.basicConfig(level=logging.INFO)
         
-        # 1. Setup Motors
-        self._init_motors()
-        
         # 2. Open Bus
         if not self.bus.open_port():
             logging.error("[LeaderArm] Port Open Failed")
