@@ -238,8 +238,10 @@ class LeaderArm:
         if self.is_running:
             self._init_dynamics()
 
-    def _init_dynamics(self, model_name, urdf_path):
-        self.robot = rby.make_state(model_name, urdf_path, [0, 0, 0, 0, 0, -9.81])
+    def _init_dynamics(self):
+        # Initialize robot kinematics and state using the trusted factory pattern
+        config = rby.dynamics.load_robot_from_urdf(self.model_path, "Base")
+        self.robot = rby.dynamics.Robot(config)
         self.dyn_state = self.robot.make_state(
             ["Base", "Link_0R", "Link_1R", "Link_2R", "Link_3R", "Link_4R", "Link_5R", "Link_6R", "Link_0L", "Link_1L",
              "Link_2L", "Link_3L", "Link_4L", "Link_5L", "Link_6L"],
@@ -247,31 +249,43 @@ class LeaderArm:
              "J5_Wrist_Pitch_R", "J6_Wrist_Yaw2_R", "J7_Shoulder_Pitch_L", "J8_Shoulder_Roll_L", "J9_Shoulder_Yaw_L",
              "J10_Elbow_L", "J11_Wrist_Yaw1_L", "J12_Wrist_Pitch_L", "J13_Wrist_Yaw2_L"]
         )
+        self.dyn_state.set_gravity([0, 0, 0, 0, 0, -9.81])
 
-    def initialize(self, verbose=True):
-        """
-        Initialize the arm.
-        """
-        logging.basicConfig(level=logging.INFO)
-        if not self.bus.open_port():
-            logging.error("[LeaderArm] Port Open Failed")
-            return False
-        self.bus_flag = True
-        
-        # Identify Active Motors
-        self.active_ids = self.bus.scan(253)
-        self.active_joint_ids = [mid for mid in self.active_ids if mid < self.DOF]
-        self.active_tool_ids = [mid for mid in self.active_ids if mid >= 0x80]
-        
-        # Initialize Dynamics
+    def SetTorqueConstant(self, torque_constant):
+        self.torque_constant = np.array(torque_constant)
+        if self.initialized:
+            self.bus.set_torque_constant(self.torque_constant.tolist())
+
+    def initialize(self, verbose=False):
+        # Configure basic logging to ensure internal thread errors are visible in terminal
+        if verbose:
+            logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+        else:
+            logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
+
+        # Set latency timer to 1ms for the serial device
         try:
-            self._init_dynamics(self.model_name, self.urdf_path)
+            rby.upc.initialize_device(self.dev_name)
         except Exception as e:
-            logging.error(f"[LeaderArm] Dynamics Init Failed: {e}")
-            return False
-            
+            if verbose:
+                logging.warning(f"Failed to initialize device latency: {e}")
+
+        if not self.bus.open_port():
+            print("Failed to open the port!")
+            return []
+        if not self.bus.set_baud_rate(self.bus.DefaultBaudrate):
+            print("Failed to change the baudrate!")
+            return []
+
         self.initialized = True
-        return True
+        self.active_ids = self.check_motor_status(verbose)
+        
+        # Categorize detected IDs
+        self.active_joint_ids = [mid for mid in self.motor_ids if mid in self.active_ids]
+        self.active_tool_ids = [tid for tid in self.tool_ids if tid in self.active_ids]
+        
+        self.bus.set_torque_constant(self.torque_constant.tolist())
+        return self.active_ids
 
     def check_motor_status(self, verbose=True):
         active_ids = []
@@ -435,15 +449,15 @@ class LeaderArm:
                 else:
                     self.state.fault_ids = list(self.motor_ids)
 
-            # 4. Read Goal Positions - Removed to prevent overwriting user commands
-            # if self.bus_flag and not self.state.fault_ids:
-            #     temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
-            #     if temp_gp:
-            #         for mid, val in temp_gp:
-            #             if mid < self.DOF:
-            #                 self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
-            #     else:
-            #         self.state.fault_ids = list(self.motor_ids)
+            # 4. Read Goal Positions
+            if self.bus_flag and not self.state.fault_ids:
+                temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
+                if temp_gp:
+                    for mid, val in temp_gp:
+                        if mid < self.DOF:
+                            self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
+                else:
+                    self.state.fault_ids = list(self.motor_ids)
 
             # 5. Compute Kinematics & Dynamics
             if not self.state.fault_ids:
@@ -452,18 +466,17 @@ class LeaderArm:
                     logging.error(f"[LeaderArm] ERROR: Non-finite joint data detected: {self.state.q_joint}")
                     self.state.fault_ids = list(range(self.DOF))
                 else:
-                    # 5-2. Re-ordering (L/R Swap Fix)
-                    # Natural Order: 0..6 (Right), 7..13 (Left)
-                    # URDF Order: J7..J13 (Left), J0..J6 (Right)
-                    q_urdf = np.concatenate([self.state.q_joint[7:], self.state.q_joint[:7]])
-                    
+                    # 5-2. Map Natural Order (R-then-L) to URDF Order (L-then-R)
+                    # URDF Order: J7..J13 (Left) then J0..J6 (Right)
+                    # Natural Order: 0..6 (Right) then 7..13 (Left)
+                    # Mapping: urdf[0..6] = q_joint[7..13], urdf[7..13] = q_joint[0..6]
+                    q_urdf = np.concatenate([self.state.q_joint[self.DOF//2:], self.state.q_joint[:self.DOF//2]])
                     self.dyn_state.set_q(q_urdf)
                     self.robot.compute_forward_kinematics(self.dyn_state)
                     
-                    # 5-3. Compute Gravity & Un-map back
+                    # Compute gravity and un-map back to Natural Order
                     grav_urdf = self.robot.compute_gravity_term(self.dyn_state)
-                    # Un-map to Natural Order [Right, Left]
-                    self.state.gravity_term = np.concatenate([grav_urdf[7:], grav_urdf[:7]]) * self.TORQUE_SCALING
+                    self.state.gravity_term = np.concatenate([grav_urdf[self.DOF//2:], grav_urdf[:self.DOF//2]]) * self.TORQUE_SCALING
                     
                     self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
                     self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
