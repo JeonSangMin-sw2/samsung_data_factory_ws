@@ -52,11 +52,7 @@ def main(address, model):
         robot.power_off("12v")
         exit(1)
     
-    # 5-degree backward tilt compensation (gx = -9.81 * sin(5))
-    # SDK 6D Gravity Convention: [Angular(3), Linear(3)]
-    calibrated_gravity = [0, 0, 0, -0.85, 0, -9.77]
-    
-    if not leader_arm.initialize(gravity=calibrated_gravity):
+    if not leader_arm.initialize(verbose=True):
         print("Failed to initialize Leader Arm")
         exit(1)
         
