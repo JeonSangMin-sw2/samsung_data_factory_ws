@@ -467,10 +467,13 @@ class LeaderArm:
                     self.state.fault_ids = list(range(self.DOF))
                 else:
                     # 5-2. Sign Correction & Re-ordering
-                    # Filter for [Right-arm, Left-arm] natural order
-                    # Right (0-6): Pitch(+), Roll(-), Yaw(-), Elbow(+), Yaw(-), Pitch(+), Yaw(-)
-                    # Left (7-13): All follow URDF standard axis (+)
-                    joint_signs = np.array([1, -1, -1, 1, -1, 1, -1,  1, 1, 1, 1, 1, 1, 1])
+                    # Natural Order indices: [0..6 (Right), 7..13 (Left)]
+                    # We need to flip signs for joints where motor convention (+ = Up/In) 
+                    # differs from URDF Axis convention for a symmetric robot.
+                    # Right (0-6): Pitch(0:+), Roll(1:-), Yaw(2:-), Elbow(3:+), WristYaw1(4:-), WristPitch(5:+), WristYaw2(6:-)
+                    # Left (7-13): Pitch(7:+), Roll(8:+), Yaw(9:+), Elbow(10:+), WristYaw1(11:+), WristPitch(12:+), WristYaw2(13:+)
+                    joint_signs = np.array([1, -1, -1, 1, -1, 1, -1,  # Right Sign Mask
+                                           1,  1,  1, 1,  1, 1,  1]) # Left Sign Mask
                     q_signed = self.state.q_joint * joint_signs
                     
                     # Map Natural Order (R-then-L) to URDF Order (L-then-R)
