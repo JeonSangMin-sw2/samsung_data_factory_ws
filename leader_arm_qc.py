@@ -94,10 +94,11 @@ def main(address, model, mode):
         header = f"--- Leader Arm QC Monitor [{mode.upper()}] | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
         line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
         line_q = f"q (rad):      {fmt(state.q_joint)}"
+        line_current = f"current (A):  {fmt(state.current)}"
         line_temp = f"temp (C):     {fmt(state.temperatures)}"
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
-        line_btn = f"buttons:      right: {state.button_right.button:1d}, left: {state.button_left.button:1d}"
+        line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
 
         # Capture logic
         if mode == 'capture':
@@ -122,6 +123,7 @@ def main(address, model, mode):
         
         print(line_idx)
         print(line_q)
+        print(line_current)
         print(line_temp)
         print(line_torque)
         print(line_grav)
@@ -130,17 +132,21 @@ def main(address, model, mode):
             print(f"Captured:     {len(recorded_positions)}")
 
         # Log to file
-        logger.save(f"{header}\n{line_idx}\n{line_q}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
+        logger.save(f"{header}\n{line_idx}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
 
         input_data = LeaderArm.ControlInput()
         
-        # Capture mode uses CurrentControlMode (gravity compensation)
+        # 6. Control Logic by Mode
         if mode == 'capture':
+            # Use CurrentControlMode with gravity compensation for easy manual movement
             input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
-        # Check mode: We do NOT force CurrentControlMode here to allow set_target_position 
-        # to correctly switch to CurrentBasedPositionControlMode without jitter.
-        
-        input_data.target_torque = state.gravity_term
+            input_data.target_torque = state.gravity_term
+        else:
+            # Check mode: Use CurrentBasedPositionControlMode for precise playback
+            # We use MAXIMUM_TORQUE as a limit to ensure it can overcome friction.
+            input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentBasedPositionControlMode)
+            input_data.target_torque.fill(leader_arm.MAXIMUM_TORQUE)
+            
         return input_data
 
     def safety_function(state: LeaderArm.State):
