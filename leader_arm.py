@@ -466,17 +466,26 @@ class LeaderArm:
                     logging.error(f"[LeaderArm] ERROR: Non-finite joint data detected: {self.state.q_joint}")
                     self.state.fault_ids = list(range(self.DOF))
                 else:
-                    # 5-2. Map Natural Order (R-then-L) to URDF Order (L-then-R)
+                    # 5-2. Sign Correction & Re-ordering
+                    # Filter for [Right-arm, Left-arm] natural order
+                    # Right (0-6): Pitch(+), Roll(-), Yaw(-), Elbow(+), Yaw(-), Pitch(+), Yaw(-)
+                    # Left (7-13): All follow URDF standard axis (+)
+                    joint_signs = np.array([1, -1, -1, 1, -1, 1, -1,  1, 1, 1, 1, 1, 1, 1])
+                    q_signed = self.state.q_joint * joint_signs
+                    
+                    # Map Natural Order (R-then-L) to URDF Order (L-then-R)
                     # URDF Order: J7..J13 (Left) then J0..J6 (Right)
-                    # Natural Order: 0..6 (Right) then 7..13 (Left)
-                    # Mapping: urdf[0..6] = q_joint[7..13], urdf[7..13] = q_joint[0..6]
-                    q_urdf = np.concatenate([self.state.q_joint[self.DOF//2:], self.state.q_joint[:self.DOF//2]])
+                    q_urdf = np.concatenate([q_signed[7:], q_signed[:7]])
+                    
                     self.dyn_state.set_q(q_urdf)
                     self.robot.compute_forward_kinematics(self.dyn_state)
                     
-                    # Compute gravity and un-map back to Natural Order
+                    # 5-3. Compute Gravity & Un-map back
                     grav_urdf = self.robot.compute_gravity_term(self.dyn_state)
-                    self.state.gravity_term = np.concatenate([grav_urdf[self.DOF//2:], grav_urdf[:self.DOF//2]]) * self.TORQUE_SCALING
+                    # Un-map to Natural Order
+                    grav_natural = np.concatenate([grav_urdf[7:], grav_urdf[:7]])
+                    # Re-apply signs to match user motor convention
+                    self.state.gravity_term = (grav_natural * joint_signs) * self.TORQUE_SCALING
                     
                     self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
                     self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
