@@ -66,7 +66,8 @@ def main(address, model):
     session_stats = {
         "total_warnings": 0,
         "max_streak": 0,
-        "has_warned_once": False
+        "has_warned_once": False,
+        "ever_warned_ids": set()
     }
 
     def control(state: LeaderArm.State):
@@ -76,6 +77,8 @@ def main(address, model):
         if state.tool_warning_ids:
             session_stats["total_warnings"] += 1
             session_stats["has_warned_once"] = True
+            for tid in state.tool_warning_ids:
+                session_stats["ever_warned_ids"].add(tid)
             
         current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
         if current_max_streak > session_stats["max_streak"]:
@@ -91,7 +94,7 @@ def main(address, model):
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
 
         # 5. Status & Alarm Section (Fixed position at bottom)
-        stats_part = f"(Total Warns: {session_stats['total_warnings']}, Max Streak: {session_stats['max_streak']})"
+        stats_part = f"(Tot: {session_stats['total_warnings']}, Max: {session_stats['max_streak']}, Hist IDs: {sorted(list(session_stats['ever_warned_ids']))})"
         
         if state.fault_ids or state.tool_fault_ids:
             all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
@@ -99,7 +102,6 @@ def main(address, model):
         elif state.tool_warning_ids:
             status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ] {stats_part}\033[0m"
         elif session_stats["has_warned_once"]:
-            # Maintain yellow status if it ever warned, but set label to RECOVERED or keep WARNING info
             status_line = f"\033[1;33mSTATUS: [ PAST WARNINGS DETECTED ] {stats_part}\033[0m"
         else:
             status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"

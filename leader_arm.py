@@ -391,113 +391,135 @@ class LeaderArm:
         self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
 
     def _ev_task(self):
-        self.state.fault_ids = []
-        self.state.tool_fault_ids = []
-        self.state.tool_warning_ids = []
-        
-        # 1. Read Tool buttons (Auxiliary - Non-fatal until threshold)
-
-        # 1. Read Tool buttons (Auxiliary - Non-fatal)
-        for tid in self.active_tool_ids:
-            res = self.bus.read_button_status(tid)
-            if res:
-                _, bstate = res
-                if tid == self.RIGHT_MOTOR_ID:
-                    self.state.button_right = bstate
-                else:
-                    self.state.button_left = bstate
-                self.tool_error_counts[tid] = 0 # Reset count on success
-            else:
-                self.state.tool_warning_ids.append(tid) # Immediate warning for any slip
-                logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts[tid]+1})")
-                self.tool_error_counts[tid] += 1
-                if self.tool_error_counts[tid] >= self.MAX_TOOL_RETRIES:
-                    self.state.tool_fault_ids.append(tid)
-
-        # 2. Read Operating Modes (Joints Only - Critical)
-        if self.bus_flag and self.active_joint_ids:
-            temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_joint_ids, True)
-            if temp_modes is not None:
-                if len(temp_modes) != len(self.active_joint_ids):
-                    responded_ids = {mid for mid, _ in temp_modes}
-                    self.state.fault_ids = [mid for mid in self.active_joint_ids if mid not in responded_ids]
-                else:
-                    for mid, mode in temp_modes:
-                        if mid < self.DOF:
-                            self.state.operating_mode[mid] = mode
-            else:
-                self.state.fault_ids = list(self.active_joint_ids)
-
-        # 3. Read Motor States (Joints Only - Critical)
-        if not self.state.fault_ids:
-            ms_list = self.bus.get_motor_states(self.motor_ids)
-            if ms_list:
-                if len(ms_list) != len(self.motor_ids):
-                    responded_ids = {mid for mid, _ in ms_list}
-                    self.state.fault_ids = [mid for mid in self.motor_ids if mid not in responded_ids]
-                else:
-                    for mid, mstate in ms_list:
-                        if mid < self.DOF:
-                            self.state.q_joint[mid] = mstate.position
-                            self.state.qvel_joint[mid] = mstate.velocity
-                            self.state.current[mid] = mstate.current
-                            self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
-                            if self.temp_flag:
-                                self.state.temperatures[mid] = mstate.temperature
-                            else:
-                                self.state.temperatures[mid] = 0.0
-            else:
-                self.state.fault_ids = list(self.motor_ids)
-
-        # 4. Read Goal Positions
-        if self.bus_flag and not self.state.fault_ids:
-            temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
-            if temp_gp:
-                for mid, val in temp_gp:
-                    if mid < self.DOF:
-                        self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
-            else:
-                self.state.fault_ids = list(self.motor_ids)
-
-        # 5. Compute Kinematics & Dynamics
-        self.dyn_state.set_q(self.state.q_joint)
-        self.robot.compute_forward_kinematics(self.dyn_state)
-        
-        # Calculate gravity term and apply scaling
-        self.state.gravity_term = self.robot.compute_gravity_term(self.dyn_state) * self.TORQUE_SCALING
-        
-        if self.transform_flag and not self.state.fault_ids:
-            self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
-            self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
-
-        # 6. Safety Check & Control
-        self.state.tool_error_counts = dict(self.tool_error_counts)
-
-        # Treat both joint faults and tool faults as critical safety events
-        if self.state.fault_ids or self.state.tool_fault_ids:
-            if self.safety_function:
-                # Trigger user-defined safety behavior (e.g., Power Off)
-                self.safety_function(self.state)
-            else:
-                # Fallback: Print combined error and skip cycle
-                all_faults = self.state.fault_ids + self.state.tool_fault_ids
-                print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
-            return
-
-        if self.control_callback and self.ctrl_session_active and not self.ctrl_callback_busy:
-            self.ctrl_callback_busy = True
+        try:
+            # 0. Reset faults for the current cycle
+            self.state.fault_ids = []
+            self.state.tool_fault_ids = []
+            self.state.tool_warning_ids = []
             
-            # Capturing a snapshot of the state ensures that the control task 
-            # works with a consistent snapshot, avoiding race conditions 
-            # when _ev_task starts updating the state for the next cycle.
-            captured_state = self.state.copy()
-            self.ctrl_ev.push_task(lambda: self._ctrl_task(captured_state))
+            # 1. Read Tool buttons (Auxiliary - Non-fatal until threshold)
+            for tid in self.active_tool_ids:
+                res = self.bus.read_button_status(tid)
+                if res:
+                    _, bstate = res
+                    if tid == self.RIGHT_MOTOR_ID:
+                        self.state.button_right = bstate
+                    else:
+                        self.state.button_left = bstate
+                    self.tool_error_counts[tid] = 0 # Reset count on success
+                else:
+                    self.state.tool_warning_ids.append(tid) # Immediate warning for any slip
+                    logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts[tid]+1})")
+                    self.tool_error_counts[tid] += 1
+                    if self.tool_error_counts[tid] >= self.MAX_TOOL_RETRIES:
+                        self.state.tool_fault_ids.append(tid)
+
+            # 2. Read Operating Modes (Joints Only - Critical)
+            if self.bus_flag and self.active_joint_ids:
+                temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_joint_ids, True)
+                if temp_modes is not None:
+                    if len(temp_modes) != len(self.active_joint_ids):
+                        responded_ids = {mid for mid, _ in temp_modes}
+                        self.state.fault_ids = [mid for mid in self.active_joint_ids if mid not in responded_ids]
+                    else:
+                        for mid, mode in temp_modes:
+                            if mid < self.DOF:
+                                self.state.operating_mode[mid] = mode
+                else:
+                    self.state.fault_ids = list(self.active_joint_ids)
+
+            # 3. Read Motor States (Joints Only - Critical)
+            if not self.state.fault_ids:
+                ms_list = self.bus.get_motor_states(self.motor_ids)
+                if ms_list:
+                    if len(ms_list) != len(self.motor_ids):
+                        responded_ids = {mid for mid, _ in ms_list}
+                        self.state.fault_ids = [mid for mid in self.motor_ids if mid not in responded_ids]
+                    else:
+                        for mid, mstate in ms_list:
+                            if mid < self.DOF:
+                                self.state.q_joint[mid] = mstate.position
+                                self.state.qvel_joint[mid] = mstate.velocity
+                                self.state.current[mid] = mstate.current
+                                self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
+                                if self.temp_flag:
+                                    self.state.temperatures[mid] = mstate.temperature
+                                else:
+                                    self.state.temperatures[mid] = 0.0
+                else:
+                    self.state.fault_ids = list(self.motor_ids)
+
+            # 4. Read Goal Positions
+            if self.bus_flag and not self.state.fault_ids:
+                temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
+                if temp_gp:
+                    for mid, val in temp_gp:
+                        if mid < self.DOF:
+                            self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
+                else:
+                    self.state.fault_ids = list(self.motor_ids)
+
+            # 5. Compute Kinematics & Dynamics
+            if not self.state.fault_ids:
+                # 5-1. Validate Input Data
+                if not np.all(np.isfinite(self.state.q_joint)):
+                    logging.error(f"[LeaderArm] ERROR: Non-finite joint data detected: {self.state.q_joint}")
+                    self.state.fault_ids = list(range(self.DOF))
+                else:
+                    # 5-2. Map Natural Order (R-then-L) to URDF Order (L-then-R)
+                    # URDF Order: J7..J13 (Left) then J0..J6 (Right)
+                    # Natural Order: 0..6 (Right) then 7..13 (Left)
+                    # Mapping: urdf[0..6] = q_joint[7..13], urdf[7..13] = q_joint[0..6]
+                    q_urdf = np.concatenate([self.state.q_joint[self.DOF//2:], self.state.q_joint[:self.DOF//2]])
+                    self.dyn_state.set_q(q_urdf)
+                    self.robot.compute_forward_kinematics(self.dyn_state)
+                    
+                    # Compute gravity and un-map back to Natural Order
+                    grav_urdf = self.robot.compute_gravity_term(self.dyn_state)
+                    self.state.gravity_term = np.concatenate([grav_urdf[self.DOF//2:], grav_urdf[:self.DOF//2]]) * self.TORQUE_SCALING
+                    
+                    self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
+                    self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
+
+            # 6. Safety Check & Control
+            self.state.tool_error_counts = dict(self.tool_error_counts)
+
+            # Treat both joint faults and tool faults as critical safety events
+            if self.state.fault_ids or self.state.tool_fault_ids:
+                if self.safety_function:
+                    # Trigger user-defined safety behavior (e.g., Power Off)
+                    self.safety_function(self.state)
+                else:
+                    # Fallback: Print combined error and skip cycle
+                    all_faults = self.state.fault_ids + self.state.tool_fault_ids
+                    print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
+                return
+
+            if self.control_callback and self.ctrl_session_active and not self.ctrl_callback_busy:
+                self.ctrl_callback_busy = True
+                
+                # Capturing a snapshot of the state ensures that the control task 
+                # works with a consistent snapshot, avoiding race conditions 
+                # when _ev_task starts updating the state for the next cycle.
+                captured_state = self.state.copy()
+                self.ctrl_ev.push_task(lambda: self._ctrl_task(captured_state))
+        except Exception as e:
+            logging.error(f"[LeaderArm] UNEXPECTED ENGINE EXCEPTION: {e}")
+            if self.safety_function:
+                # Force safety shutdown on any software exception
+                self.safety_function(self.state)
+            raise e
 
     def _ctrl_task(self, state):
         try:
             user_input = self.control_callback(state)
             if user_input:
                 self._handle_control_input(user_input, state)
+        except Exception as e:
+            logging.error(f"[LeaderArm] EXCEPTION IN CONTROL CALLBACK: {e}")
+            if self.safety_function:
+                self.safety_function(state)
+            raise e
         finally:
             self.ctrl_callback_busy = False
 
