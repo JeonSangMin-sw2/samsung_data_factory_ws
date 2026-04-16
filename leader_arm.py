@@ -20,8 +20,8 @@ GRIPPER_DIRECTION = True
 class LeaderArm:
     DOF = 14
     DEVICE_COUNT = 16
-    RIGHT_MOTOR_ID = 0x80
-    LEFT_MOTOR_ID = 0x81
+    RIGHT_TOOL_ID = 0x80
+    LEFT_TOOL_ID = 0x81
     MAXIMUM_TORQUE = 0.5
     TORQUE_SCALING = 0.5
     kBaseLinkId = 0
@@ -207,7 +207,7 @@ class LeaderArm:
                                          1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043])
         self.active_ids = []
         self.motor_ids = list(range(self.DOF))
-        self.tool_ids = [self.RIGHT_MOTOR_ID, self.LEFT_MOTOR_ID]
+        self.tool_ids = [self.RIGHT_TOOL_ID, self.LEFT_TOOL_ID]
         self.active_joint_ids = [] # Dynamically set during initialize
         self.active_tool_ids = []  # Dynamically set during initialize
 
@@ -402,7 +402,7 @@ class LeaderArm:
                 res = self.bus.read_button_status(tid)
                 if res:
                     _, bstate = res
-                    if tid == self.RIGHT_MOTOR_ID:
+                    if tid == self.RIGHT_TOOL_ID:
                         self.state.button_right = bstate
                     else:
                         self.state.button_left = bstate
