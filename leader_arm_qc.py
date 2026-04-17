@@ -74,14 +74,23 @@ def main(address, model, mode):
     fault_registry = {} # Tracks {id: cumulative_error_count}
 
     def handler(signum, frame):
-        print("\nInterrupt received. Stopping...")
-        if mode == 'capture' and recorded_positions:
-            save_positions(recorded_positions)
-            verify_saved_positions()
+        nonlocal recorded_positions
+        print("\n\n[System] Interrupt received. Finalizing session...")
+        if mode == 'capture':
+            if recorded_positions:
+                save_positions(recorded_positions)
+                verify_saved_positions()
+            else:
+                print("[Info] No positions were recorded in this session.")
+        
         if leader_arm:
+            print("[System] Closing Leader Arm engine...")
             leader_arm.close()
+        
+        print("[System] Powering off 12V and exiting.")
         robot.power_off("12v")
-        exit(1)
+        time.sleep(0.5)
+        os._exit(0)
     
     signal.signal(signal.SIGINT, handler)
     leader_arm.initialize(verbose=True)
