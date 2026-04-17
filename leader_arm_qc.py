@@ -51,6 +51,19 @@ def verify_saved_positions():
             print(f"  #{i+1:2d}: {', '.join([f'{x:7.3f}' for x in pos])}")
         print(f"[Verification] Total {len(positions)} positions verified.\n")
 
+
+
+
+# 리더암의 자세를 저장하고, 그 자세로 움직이면서 각 모터들의 커넥터 상태 확인
+# args 에  mode란 파라미터 추가됨 (capture, check(default)).
+# capture 면 리더암 버튼누르면 포지션 저장됨. 종료 후 파일 npz 로 저장
+# check면 저장된 포지션으로 이동하면서 각 모터들의 커넥터 상태 확인
+# 모터 힘이 부족해서 목표위치까지 못가거나, 통신에러가 발생하면 세이프티 발동
+# 세이프티 : 2초동안 입력된 토크를 줄이는 방식으로 진행중(제대로 작동하는지는 잘 모르겠음)
+# 문제상황
+# 1. 모터를 set_target_position 함수로 움직이는데, 저장된 포지션대로 움직여주지 않음
+# 2. 모터 자체가 힘이 딸리면서 계속 목표지점으로 못간다고 뜨다보니 성능확인 어려움
+
 def main(address, model, mode):
     logger = File_Logger()
     robot = rby.create_robot(address, model)
@@ -226,7 +239,7 @@ def main(address, model, mode):
                 check_status['is_ok'] = True # Reset OK status for the new posture
                 
                 print(f"\n[Check {i+1}/{len(positions)}] Moving to posture...")
-                leader_arm.set_target_position(pos,duration=1.0)
+                leader_arm.set_target_position(pos)
                 
                 # Wait for the posture stabilization period
                 time.sleep(DEFAULT_WAIT_TIME)

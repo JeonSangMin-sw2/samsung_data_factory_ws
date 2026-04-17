@@ -2,6 +2,8 @@
 Teleoperation Example
 
 Run this example on UPC to which the master arm and hands are connected
+
+이건 현재 일반 텔레옵이랑 다르지 않음
 """
 
 import rby1_sdk as rby

@@ -28,13 +28,13 @@ class LeaderArm:
     kRightLinkId = 7
     kLeftLinkId = 14
 
-    class ButtonSnapshot:
+    class ButtonSnapshot: # 버튼 상태 구조체
         __slots__ = ['button', 'trigger']
         def __init__(self, b, t):
             self.button = b
             self.trigger = t
 
-    class State:
+    class State: # 기본적으로 저장되는 변수들
         __slots__ = [
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
@@ -54,12 +54,15 @@ class LeaderArm:
             self.T_right = np.eye(4)
             self.T_left = np.eye(4)
             self.temperatures = np.zeros(dof, dtype=np.float64)
-            self.fault_ids = []
-            self.tool_fault_ids = []
-            self.tool_warning_ids = []
+            self.fault_ids = [] # 통신실패한 id
+            self.tool_fault_ids = [] # 통신실패한 tool id 
             self.current = np.zeros(dof, dtype=np.float64)
-            self.tool_error_counts = {}
+            # 아래 변수는 현재 가지고있는 리더암의 우측 툴이 계속 상태가 안좋아서 통신끊기는 현상때문에 만들게 된 변수
+            # 툴(트리거, 버튼), 조인트 모두 중요하게 제어되어야 한다면 이 변수에 관련된 코드는 제거해야함 
+            self.tool_warning_ids = [] # MAX_TOOL_RETRIES변수 만큼 툴쪽 통신에러가 연속으로 발동되면 세이프티 발동. 그 경고된 id 
+            self.tool_error_counts = {} # 툴쪽 통신에러가 난 횟수
 
+        # 메모리 접근충돌을 막기 위해 데이터를 복사해서 사용
         def copy(self):
             # Create a shallow copy of the object structure
             snapshot = copy.copy(self)
@@ -119,6 +122,7 @@ class LeaderArm:
             self.target_position = np.zeros(dof, dtype=np.float64)
             self.target_torque = np.zeros(dof, dtype=np.float64)
     
+    # 기존 멀티스레드 관리방식이랑 동일하게 구현해놓음
     class EventLoop:
         def __init__(self):
             self._tasks = queue.Queue()
@@ -188,7 +192,7 @@ class LeaderArm:
                 finally:
                     self._tasks.task_done()
 
-    # LeaderArm class init function
+    # 리더암 클래스의 초기화 함수
     def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_temp=True, check_bus=True, check_transform=True):
         self.dev_name = dev_name
         self.bus = rby.DynamixelBus(dev_name)
@@ -238,6 +242,12 @@ class LeaderArm:
         if self.is_running:
             self._init_dynamics()
 
+    def SetTorqueConstant(self, torque_constant):
+        self.torque_constant = np.array(torque_constant)
+        if self.initialized:
+            self.bus.set_torque_constant(self.torque_constant.tolist())
+    
+    # 동역학 모델 정의
     def _init_dynamics(self):
         # Initialize robot kinematics and state using the trusted factory pattern
         config = rby.dynamics.load_robot_from_urdf(self.model_path, "Base")
@@ -251,19 +261,14 @@ class LeaderArm:
         )
         self.dyn_state.set_gravity([0, 0, 0, 0, 0, -9.81])
 
-    def SetTorqueConstant(self, torque_constant):
-        self.torque_constant = np.array(torque_constant)
-        if self.initialized:
-            self.bus.set_torque_constant(self.torque_constant.tolist())
-
+    # 기존 초기화 기능과 동일. cpp에는 좀 더 긴데, 그건 함수로 모듈화해놓고 사용중
     def initialize(self, verbose=False):
-        # Configure basic logging to ensure internal thread errors are visible in terminal
+        # 내부 쓰레드 오류를 터미널에 표시하기 위해 기본 로깅을 설정
         if verbose:
             logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
         else:
             logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
 
-        # Set latency timer to 1ms for the serial device
         try:
             rby.upc.initialize_device(self.dev_name)
         except Exception as e:
@@ -304,31 +309,21 @@ class LeaderArm:
         
         return active_ids
 
-    def monitor_health(self, duration, interval=0.5):
-        """
-        Periodically pings all active motors for a given duration.
-        Returns (True, None) if all OK, or (False, failed_id) on first failure.
-        """
-        start_time = time.time()
-        while time.time() - start_time < duration:
-            for mid in self.active_ids:
-                if not self.bus.ping(mid):
-                    return False, mid
-            time.sleep(interval)
-        return True, None
+    def EnableTorque(self):
+        self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
 
-    def set_target_position(self, q_target, goal_current=0.5, duration=0.0):
+    def DisableTorque(self):
+        self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
+
+    # qc를 위해 자세들을 입력해서 모터를 움직이는 코드
+    def set_target_position(self, q_target, goal_current=0.5):
         if len(q_target) != self.DOF:
             logging.error(f"Target position length mismatch: expected {self.DOF}, got {len(q_target)}")
             return False
         
-        if duration > 0:
-            return self.move_to(q_target, duration, goal_current)
-
         def task():
             target_mode = rby.DynamixelBus.CurrentBasedPositionControlMode
             
-            # Identify which motors need a mode change
             needs_mode_change = []
             for i in self.motor_ids:
                 if self.state.operating_mode[i] != target_mode:
@@ -359,40 +354,7 @@ class LeaderArm:
             task()
         return True
 
-    def move_to(self, target_q, duration, goal_current=0.5):
-        """
-        Moves the arm smoothly to the target position using S-curve interpolation.
-        """
-        start_q = self.state.q_joint.copy()
-        start_time = time.time()
-        
-        # Ensure operating mode is correct (synchronously if not running)
-        self.set_target_position(start_q, goal_current, duration=0.0)
-
-        def interpolation_task():
-            elapsed = time.time() - start_time
-            if elapsed >= duration:
-                # Final setpoint for precision
-                self.set_target_position(target_q, goal_current, duration=0.0)
-                return False # Stop cyclic task
-            
-            # Cosine-based S-curve interpolation
-            t = elapsed / duration
-            alpha = (1.0 - np.cos(np.pi * t)) / 2.0
-            interp_q = start_q + (target_q - start_q) * alpha
-            
-            # Send commands directly through the bus since we are in the ev thread
-            self.bus.group_sync_write_send_torque([(i, goal_current) for i in self.motor_ids])
-            self.bus.group_sync_write_send_position([(i, float(q)) for i, q in enumerate(interp_q)])
-            return True # Continue cyclic task
-
-        if self.is_running:
-            self.ev.push_cyclic_task(interpolation_task, self.control_period)
-        else:
-            # If not running, we must simulate the loop or just move instantly
-            # For simplicity, if not running, we move immediately.
-            self.set_target_position(target_q, goal_current, duration=0.0)
-        return True
+    # 기존 start_control 함수. 테스크의 내용은 아래에 있음
     def start_control(self, callback, safety_function=None):
         if not self.initialized:
             return False
@@ -440,12 +402,7 @@ class LeaderArm:
         self.control_callback = None
         return True
 
-    def EnableTorque(self):
-        self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
-
-    def DisableTorque(self):
-        self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
-
+    # 데이터 읽는 테스크
     def _ev_task(self):
         try:
             # 0. Reset faults for the current cycle
@@ -566,6 +523,7 @@ class LeaderArm:
                 self.safety_function(self.state)
             raise e
 
+    # 유저가 정의한 콜백 함수를 실행하는 테스크
     def _ctrl_task(self, state):
         try:
             user_input = self.control_callback(state)
@@ -620,101 +578,3 @@ class LeaderArm:
 
     def close(self):
         self.stop_control(torque_disable=True)
-
-class Gripper:
-    """
-    Class for gripper
-    """
-
-    def __init__(self):
-        self.bus = rby.DynamixelBus(rby.upc.GripperDeviceName)
-        self.bus.open_port()
-        self.bus.set_baud_rate(2_000_000)
-        self.bus.set_torque_constant([1, 1])
-        self.min_q = np.array([np.inf, np.inf])
-        self.max_q = np.array([-np.inf, -np.inf])
-        self.target_q: np.typing.NDArray = None
-        self._running = False
-        self._thread = None
-
-    def initialize(self, verbose=True):
-        rv = True
-        for dev_id in [0, 1]:
-            if not self.bus.ping(dev_id):
-                if verbose:
-                    logging.error(f"Dynamixel ID {dev_id} is not active")
-                rv = False
-            else:
-                if verbose:
-                    logging.info(f"Dynamixel ID {dev_id} is active")
-        if rv:
-            logging.info("Servo on gripper")
-            self.bus.group_sync_write_torque_enable([(dev_id, 1) for dev_id in [0, 1]])
-        return rv
-
-    def set_operating_mode(self, mode):
-        self.bus.group_sync_write_torque_enable([(dev_id, 0) for dev_id in [0, 1]])
-        self.bus.group_sync_write_operating_mode([(dev_id, mode) for dev_id in [0, 1]])
-        self.bus.group_sync_write_torque_enable([(dev_id, 1) for dev_id in [0, 1]])
-
-    def homing(self):
-        self.set_operating_mode(rby.DynamixelBus.CurrentControlMode)
-        direction = 0
-        q = np.array([0, 0], dtype=np.float64)
-        prev_q = np.array([0, 0], dtype=np.float64)
-        counter = 0
-        while direction < 2:
-            self.bus.group_sync_write_send_torque(
-                [(dev_id, 0.5 * (1 if direction == 0 else -1)) for dev_id in [0, 1]]
-            )
-            rv = self.bus.group_fast_sync_read_encoder([0, 1])
-            if rv is not None:
-                for dev_id, enc in rv:
-                    q[dev_id] = enc
-            self.min_q = np.minimum(self.min_q, q)
-            self.max_q = np.maximum(self.max_q, q)
-            if np.array_equal(prev_q, q):
-                counter += 1
-            prev_q = q
-            if counter >= 30:
-                direction += 1
-                counter = 0
-            time.sleep(0.1)
-        return True
-
-    def start(self):
-        if self._thread is None or not self._thread.is_alive():
-            self._running = True
-            self._thread = threading.Thread(target=self.loop, daemon=True)
-            self._thread.start()
-
-    def stop(self):
-        self._running = False
-        if self._thread is not None:
-            self._thread.join()
-            self._thread = None
-
-    def loop(self):
-        self.set_operating_mode(rby.DynamixelBus.CurrentBasedPositionControlMode)
-        self.bus.group_sync_write_send_torque([(dev_id, 5) for dev_id in [0, 1]])
-        while self._running:
-            if self.target_q is not None:
-                self.bus.group_sync_write_send_position(
-                    [(dev_id, q) for dev_id, q in enumerate(self.target_q.tolist())]
-                )
-                print(f"Temperature_right: {self.bus.read_temperature(0)}")
-                print(f"Temperature_left: {self.bus.read_temperature(1)}")
-            time.sleep(0.1)
-
-    def set_target(self, normalized_q):
-        # self.target_q = normalized_q * (self.max_q - self.min_q) + self.min_q
-        if not np.isfinite(self.min_q).all() or not np.isfinite(self.max_q).all():
-            logging.error("Cannot set target. min_q or max_q is not valid.")
-            return
-
-        if GRIPPER_DIRECTION:
-            self.target_q = normalized_q * (self.max_q - self.min_q) + self.min_q
-        else:
-            self.target_q = (1 - normalized_q) * (self.max_q - self.min_q) + self.min_q
-            
-
