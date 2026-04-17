@@ -157,9 +157,9 @@ class LeaderArm:
                     return
                 
                 start_time = time.time()
-                task()
+                result = task()
                 
-                if not self._running:
+                if not self._running or result is False:
                     return
 
                 elapsed = time.time() - start_time
@@ -317,27 +317,81 @@ class LeaderArm:
             time.sleep(interval)
         return True, None
 
-    def set_target_position(self, q_target):
+    def set_target_position(self, q_target, goal_current=0.5, duration=0.0):
         if len(q_target) != self.DOF:
             logging.error(f"Target position length mismatch: expected {self.DOF}, got {len(q_target)}")
             return False
         
+        if duration > 0:
+            return self.move_to(q_target, duration, goal_current)
+
         def task():
-            # 1. Disable Torque
-            self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
-            # 2. Set Operating Mode
-            self.bus.group_sync_write_operating_mode([(i, rby.DynamixelBus.CurrentBasedPositionControlMode) for i in self.motor_ids])
-            # 3. Enable Torque
-            self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
-            # 4. Send Position
-            # Position scale: 4096 / (2*pi)
-            raw_pos = [(i, int(q * 4096.0 / (2.0 * np.pi))) for i, q in enumerate(q_target)]
-            self.bus.group_sync_write_send_position(raw_pos)
+            target_mode = rby.DynamixelBus.CurrentBasedPositionControlMode
+            
+            # Identify which motors need a mode change
+            needs_mode_change = []
+            for i in self.motor_ids:
+                if self.state.operating_mode[i] != target_mode:
+                    needs_mode_change.append(i)
+            
+            if needs_mode_change:
+                # 1. Disable Torque only for motors needing mode change
+                self.bus.group_sync_write_torque_enable(needs_mode_change, 0)
+                # 2. Set Operating Mode
+                self.bus.group_sync_write_operating_mode([(i, target_mode) for i in needs_mode_change])
+                # 3. Enable Torque
+                self.bus.group_sync_write_torque_enable(needs_mode_change, 1)
+                
+                # Update local operating mode state
+                for i in needs_mode_change:
+                    self.state.operating_mode[i] = target_mode
+
+            # 4. Set Goal Current (Torque Limit)
+            self.bus.group_sync_write_send_torque([(i, goal_current) for i in self.motor_ids])
+
+            # 5. Send Position
+            # SDK handles radian -> tick conversion internally. No manual scaling needed.
+            self.bus.group_sync_write_send_position([(i, q) for i, q in enumerate(q_target)])
 
         if self.is_running:
             self.ev.push_task(task)
         else:
             task()
+        return True
+
+    def move_to(self, target_q, duration, goal_current=0.5):
+        """
+        Moves the arm smoothly to the target position using S-curve interpolation.
+        """
+        start_q = self.state.q_joint.copy()
+        start_time = time.time()
+        
+        # Ensure operating mode is correct (synchronously if not running)
+        self.set_target_position(start_q, goal_current, duration=0.0)
+
+        def interpolation_task():
+            elapsed = time.time() - start_time
+            if elapsed >= duration:
+                # Final setpoint for precision
+                self.set_target_position(target_q, goal_current, duration=0.0)
+                return False # Stop cyclic task
+            
+            # Cosine-based S-curve interpolation
+            t = elapsed / duration
+            alpha = (1.0 - np.cos(np.pi * t)) / 2.0
+            interp_q = start_q + (target_q - start_q) * alpha
+            
+            # Send commands directly through the bus since we are in the ev thread
+            self.bus.group_sync_write_send_torque([(i, goal_current) for i in self.motor_ids])
+            self.bus.group_sync_write_send_position([(i, float(q)) for i, q in enumerate(interp_q)])
+            return True # Continue cyclic task
+
+        if self.is_running:
+            self.ev.push_cyclic_task(interpolation_task, self.control_period)
+        else:
+            # If not running, we must simulate the loop or just move instantly
+            # For simplicity, if not running, we move immediately.
+            self.set_target_position(target_q, goal_current, duration=0.0)
         return True
     def start_control(self, callback, safety_function=None):
         if not self.initialized:
@@ -364,6 +418,7 @@ class LeaderArm:
         self.ctrl_ev.unpause()
         self.ev.start()
         self.ctrl_ev.start()
+        self.is_running = True
 
         self.ev.push_cyclic_task(self._ev_task, self.control_period)
         return True
@@ -378,6 +433,7 @@ class LeaderArm:
 
         # 2. Shutdown threads
         self.ctrl_session_active = False
+        self.is_running = False
         self.ev.stop()
         self.ctrl_ev.stop()
 
