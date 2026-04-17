@@ -43,6 +43,14 @@ def load_positions():
     data = np.load(POSITION_FILE)
     return data['positions']
 
+def verify_saved_positions():
+    positions = load_positions()
+    if positions is not None:
+        print(f"\n[Verification] Reading from {POSITION_FILE}:")
+        for i, pos in enumerate(positions):
+            print(f"  #{i+1:2d}: {', '.join([f'{x:7.3f}' for x in pos])}")
+        print(f"[Verification] Total {len(positions)} positions verified.\n")
+
 def main(address, model, mode):
     logger = File_Logger()
     robot = rby.create_robot(address, model)
@@ -69,6 +77,7 @@ def main(address, model, mode):
         print("\nInterrupt received. Stopping...")
         if mode == 'capture' and recorded_positions:
             save_positions(recorded_positions)
+            verify_saved_positions()
         if leader_arm:
             leader_arm.close()
         robot.power_off("12v")
