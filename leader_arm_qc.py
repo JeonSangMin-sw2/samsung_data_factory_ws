@@ -208,7 +208,7 @@ def main(address, model, mode):
                 check_status['is_ok'] = True # Reset OK status for the new posture
                 
                 print(f"\n[Check {i+1}/{len(positions)}] Moving to posture...")
-                leader_arm.set_target_position(pos)
+                leader_arm.set_target_position(pos,duration=1.0)
                 
                 # Wait for the posture stabilization period
                 time.sleep(DEFAULT_WAIT_TIME)
