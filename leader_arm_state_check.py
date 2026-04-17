@@ -45,6 +45,7 @@ def main(address, model):
 
     leader_arm = LeaderArm(control_period=0.01)
 
+    # 프로그램 종료시 핸들러
     def handler(signum, frame):
         print("\nInterrupt received. Stopping...")
         if leader_arm:
@@ -60,6 +61,7 @@ def main(address, model):
         print(f"Error: Mismatch in the number of devices detected. Expected {leader_arm.DEVICE_COUNT}, got {len(leader_arm.active_ids)}")
         exit(1)
 
+    # 모니터링을 위한 함수
     def fmt(arr):
         return ", ".join([f"{x:7.3f}" for x in arr])
 
@@ -71,6 +73,10 @@ def main(address, model):
         "ever_warned_ids": set()
     }
 
+    # 사용자 정의함수
+    # 1. 상태 모니터링
+    # 2. 중력보상값 모터에 입력
+    # 3. 통신문제(조인트가 문제발생, 혹은 버튼 트리거 관련 신호가 5번 연속으로 문제생길경우) 발생 시 12v 공급 차단
     def control(state: LeaderArm.State):
         nonlocal session_stats
         

@@ -9,6 +9,9 @@ import sys
 
 from leader_arm import LeaderArm
 
+
+
+# 해당코드는 미완성. 모터 포지션 입력값이 제대로 들어가나 확인할려고 만든 코드인데 제대로 작동 안함
 def main(address, model):
     robot = rby.create_robot(address, model)
     robot.connect()
@@ -42,7 +45,6 @@ def main(address, model):
     OFFSET_RAD = np.deg2rad(OFFSET_DEG)
 
     def control(state: LeaderArm.State):
-        # We just keep gravity compensation active during the whole process
         input_data = LeaderArm.ControlInput()
         input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
         input_data.target_torque = state.gravity_term
@@ -70,24 +72,38 @@ def main(address, model):
             ("+5 deg", q_base.copy())
         ]
         targets[0][1][mid] -= OFFSET_RAD
-        # targets[1] is base, no change
         targets[2][1][mid] += OFFSET_RAD
 
         for label, q_target in targets:
-            # Inline monitoring while moving
+            # Manual S-curve interpolation loop
             start_time = time.time()
-            leader_arm.set_target_position(q_target, duration=MOVE_DURATION)
+            current_q_start = leader_arm.state.q_joint.copy()
             
-            while time.time() - start_time < MOVE_DURATION + 0.5:
+            # Ensure mode is current-based position
+            leader_arm.set_target_position(current_q_start, goal_current=0.5)
+            
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed >= MOVE_DURATION:
+                    leader_arm.set_target_position(q_target, goal_current=0.5)
+                    break
+                
+                # S-curve interpolation
+                t = elapsed / MOVE_DURATION
+                alpha = (1.0 - np.cos(np.pi * t)) / 2.0
+                interp_q = current_q_start + (q_target - current_q_start) * alpha
+                
+                # Direct bus write (via leader_arm helper if we had one, but we use it via bus)
+                # We use set_target_position for mode but for real-time we can use raw write
+                leader_arm.bus.group_sync_write_send_torque([(i, 0.5) for i in range(leader_arm.DOF)])
+                leader_arm.bus.group_sync_write_send_position([(i, float(q)) for i, q in enumerate(interp_q)])
+                
+                # Monitoring
                 curr_state = leader_arm.state.copy()
                 q_val = curr_state.q_joint[mid]
-                c_val = curr_state.current[mid]
-                t_val = curr_state.temperatures[mid]
-                
-                # Real-time state line
-                sys.stdout.write(f"\r  --> Moving to {label}: Pos: {q_val:7.3f} rad | Current: {c_val:7.3f} A | Temp: {t_val:5.1f} C  \033[K")
+                sys.stdout.write(f"\r  --> Moving to {label}: Pos: {q_val:7.3f} rad | Current: {curr_state.current[mid]:7.3f} A  \033[K")
                 sys.stdout.flush()
-                time.sleep(0.05)
+                time.sleep(0.01)
             
             print() # New line after finishing one target
 
