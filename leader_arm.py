@@ -40,7 +40,7 @@ class LeaderArm:
             'operating_mode', 'target_position', 'button_right', 
             'button_left', 'T_right', 'T_left', 'temperatures',
             'fault_ids', 'joint_fault_ids', 'tool_fault_ids', 'current', 'tool_error_counts', 'joint_error_counts',
-            'check_status_duration'
+            'check_status_duration', 'fault_ids_history'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -57,6 +57,7 @@ class LeaderArm:
             self.fault_ids = [] # 통신실패한 id
             self.joint_fault_ids = []
             self.tool_fault_ids = [] # 통신실패한 tool id 
+            self.fault_ids_history = np.zeros(dof +2, dtype=np.int64)
             self.current = np.zeros(dof, dtype=np.float64)
             self.tool_error_counts = 0
             self.joint_error_counts = 0
@@ -83,6 +84,7 @@ class LeaderArm:
             snapshot.tool_error_counts = 0
             snapshot.joint_error_counts = 0
             snapshot.check_status_duration = 0.0
+            snapshot.fault_ids_history = np.zeros(dof + 2, dtype=np.int64)
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -104,6 +106,7 @@ class LeaderArm:
             target.tool_error_counts = self.tool_error_counts
             target.joint_error_counts = self.joint_error_counts
             target.check_status_duration = self.check_status_duration
+            target.fault_ids_history[:] = self.fault_ids_history
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -429,6 +432,8 @@ class LeaderArm:
                 else:
                     all_tools_ok = False
                     self.state.tool_fault_ids.append(tid)
+                    # Increment history (Tools start after DOF joints: 0x80->14, 0x81->15)
+                    self.fault_ids_history[tid - 0x80 + self.DOF] += 1
                     logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts+1})")
             
             if all_tools_ok:
@@ -496,6 +501,11 @@ class LeaderArm:
             # 6. Joint Recovery & Fault Consolidation
             # Trigger recovery block if we have ANY joint faults (missing or newly failed)
             if self.state.joint_fault_ids:
+                # Record recently detected joint faults to history before re-pinging (optional: could also record after cleanup)
+                for fid in self.state.joint_fault_ids:
+                    if fid < self.DOF:
+                        self.fault_ids_history[fid] += 1
+                
                 active_ids = self.check_motor_status(verbose=False)
                 # Redefine joint_fault_ids based on actual current active IDs
                 self.state.joint_fault_ids = sorted(list(set(self.motor_ids) - (set(active_ids) & set(self.motor_ids))))

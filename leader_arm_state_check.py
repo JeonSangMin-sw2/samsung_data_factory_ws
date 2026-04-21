@@ -31,6 +31,7 @@ class File_Logger:
 
 
 
+
 def main(address, model):
     logger = File_Logger()
     robot = rby.create_robot(address, model)
@@ -74,6 +75,7 @@ def main(address, model):
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
         line_fault = f"Fault IDs:    {state.fault_ids}, (check time : {state.check_status_duration})"
+        line_history = f"Fault count:   {state.fault_ids_history.tolist()}"
         
         # 5. Status & Alarm Section
         if state.fault_ids:
@@ -92,10 +94,11 @@ def main(address, model):
         print(line_grav, flush=True)
         print(line_btn, flush=True)
         print(line_fault, flush=True)
+        print(line_history, flush=True)
         print("\n" + status_line, flush=True)
 
         # Log to file
-        logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{line_fault}\n{status_line}\n")
+        logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{line_fault}\n{line_history}\n{status_line}\n")
         
         input = LeaderArm.ControlInput()
         input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
