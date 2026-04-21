@@ -169,7 +169,7 @@ def main(address, model):
         os._exit(1)
 
     try:
-        leader_arm.start_control(control, safety_function=None)
+        leader_arm.start_control(control, safety_function=safety_function)
         while leader_arm.ctrl_session_active:
             time.sleep(1)
     except KeyboardInterrupt:
