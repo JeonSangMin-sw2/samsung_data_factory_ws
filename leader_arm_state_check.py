@@ -71,65 +71,69 @@ def main(address, model):
     # 3. 통신문제(조인트가 문제발생, 혹은 버튼 트리거 관련 신호가 5번 연속으로 문제생길경우) 발생 시 12v 공급 차단
     def control(state: LeaderArm.State):
         nonlocal session_stats
-        
-        # Update statistics
-        if state.tool_warning_ids:
-            session_stats["total_warnings"] += 1
-            session_stats["has_warned_once"] = True
-            for tid in state.tool_warning_ids:
-                session_stats["ever_warned_ids"].add(tid)
-            
-        current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
-        if current_max_streak > session_stats["max_streak"]:
-            session_stats["max_streak"] = current_max_streak
-
-        header = f"--- Leader Arm state Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
-        line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
-        line_q = f"q (rad):      {fmt(state.q_joint)}"
-        line_current = f"current (A):  {fmt(state.current)}"
-        line_temp = f"temp (C):     {fmt(state.temperatures)}"
-        line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
-        line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
-        line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
-
-        # 5. Status & Alarm Section (Fixed position at bottom)
-        stats_part = f"(Tot: {session_stats['total_warnings']}, Max: {session_stats['max_streak']}, Hist IDs: {sorted(list(session_stats['ever_warned_ids']))})"
-        
         if state.fault_ids or state.tool_fault_ids:
-            all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
-            status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {all_faults} ] {stats_part}\033[0m"
-        elif state.tool_warning_ids:
-            status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ] {stats_part}\033[0m"
-        elif session_stats["has_warned_once"]:
-            status_line = f"\033[1;33mSTATUS: [ PAST WARNINGS DETECTED ] {stats_part}\033[0m"
+            print(state.fault_ids)
+            print(state.tool_fault_ids)
+            
         else:
-            status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
+            # Update statistics
+            if state.tool_warning_ids:
+                session_stats["total_warnings"] += 1
+                session_stats["has_warned_once"] = True
+                for tid in state.tool_warning_ids:
+                    session_stats["ever_warned_ids"].add(tid)
+                
+            current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
+            if current_max_streak > session_stats["max_streak"]:
+                session_stats["max_streak"] = current_max_streak
 
-        print("\033[H\033[J", end="", flush=True)  # Clear terminal and move cursor to top
-        print(header, flush=True)
-        print("-" * len(header), flush=True)
-        print(line_idx, flush=True)
-        print(line_q, flush=True)
-        print(line_current, flush=True)
-        print(line_temp, flush=True)
-        print(line_torque, flush=True)
-        print(line_grav, flush=True)
-        print(line_btn, flush=True)
-        print("\n" + status_line, flush=True)
+            header = f"--- Leader Arm state Monitor | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
+            line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
+            line_q = f"q (rad):      {fmt(state.q_joint)}"
+            line_current = f"current (A):  {fmt(state.current)}"
+            line_temp = f"temp (C):     {fmt(state.temperatures)}"
+            line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
+            line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
+            line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
 
-        # Tool Warning
-        if state.tool_fault_ids:
-            warning_msg = f"! [TOOL WARNING] Communication failure on IDs: {state.tool_fault_ids}"
-            print(warning_msg, flush=True)
-            logger.save(f"{warning_msg}\n")
+            # 5. Status & Alarm Section (Fixed position at bottom)
+            stats_part = f"(Tot: {session_stats['total_warnings']}, Max: {session_stats['max_streak']}, Hist IDs: {sorted(list(session_stats['ever_warned_ids']))})"
+            
+            if state.fault_ids or state.tool_fault_ids:
+                all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
+                status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {all_faults} ] {stats_part}\033[0m"
+            elif state.tool_warning_ids:
+                status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ] {stats_part}\033[0m"
+            elif session_stats["has_warned_once"]:
+                status_line = f"\033[1;33mSTATUS: [ PAST WARNINGS DETECTED ] {stats_part}\033[0m"
+            else:
+                status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
 
-        # Log to file
-        logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{status_line}\n")
+            print("\033[H\033[J", end="", flush=True)  # Clear terminal and move cursor to top
+            print(header, flush=True)
+            print("-" * len(header), flush=True)
+            print(line_idx, flush=True)
+            print(line_q, flush=True)
+            print(line_current, flush=True)
+            print(line_temp, flush=True)
+            print(line_torque, flush=True)
+            print(line_grav, flush=True)
+            print(line_btn, flush=True)
+            print("\n" + status_line, flush=True)
 
-        input = LeaderArm.ControlInput()
+            # Tool Warning
+            if state.tool_fault_ids:
+                warning_msg = f"! [TOOL WARNING] Communication failure on IDs: {state.tool_fault_ids}"
+                print(warning_msg, flush=True)
+                logger.save(f"{warning_msg}\n")
 
-        input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
-        input.target_torque = state.gravity_term
+            # Log to file
+            logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{status_line}\n")
+
+            input = LeaderArm.ControlInput()
+
+            input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
+            input.target_torque = state.gravity_term
 
         return input
 
@@ -165,7 +169,7 @@ def main(address, model):
         os._exit(1)
 
     try:
-        leader_arm.start_control(control, safety_function=safety_function)
+        leader_arm.start_control(control, safety_function=None)
         while leader_arm.ctrl_session_active:
             time.sleep(1)
     except KeyboardInterrupt:
