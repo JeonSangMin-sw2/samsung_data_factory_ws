@@ -423,6 +423,7 @@ class LeaderArm:
             # Essential for disconnection detection, so we run this regardless of goal_pos_flag.
             if self.active_joint_ids:
                 temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_joint_ids, False)
+                print(temp_modes)
                 if temp_modes is not None:
                     if len(temp_modes) != len(self.active_joint_ids):
                         responded_ids = {mid for mid, _ in temp_modes}
