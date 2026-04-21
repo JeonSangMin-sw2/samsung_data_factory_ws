@@ -44,14 +44,6 @@ def main(address, model):
         exit(1)
 
     leader_arm = LeaderArm(control_period=0.01)
-
-    # 프로그램 종료시 핸들러
-    def handler(signum, frame):
-        print("\nInterrupt received. Stopping...")
-        if leader_arm:
-            leader_arm.close()
-        robot.power_off("12v")
-        exit(1)
     
     if not leader_arm.initialize(verbose=True):
         print("Failed to initialize Leader Arm")

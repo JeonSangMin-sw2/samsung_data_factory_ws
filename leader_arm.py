@@ -485,8 +485,11 @@ class LeaderArm:
             # Treat both joint faults and tool faults as critical safety events
             if self.state.fault_ids or self.state.tool_fault_ids:
                 if self.safety_function:
-                    # Trigger user-defined safety behavior (e.g., Power Off)
-                    self.safety_function(self.state)
+                    # Run safety_function in a separate thread to avoid deadlock
+                    # (safety_function may call stop_control which joins ev thread)
+                    fault_state = self.state.copy()
+                    safety_thread = threading.Thread(target=self.safety_function, args=(fault_state,), daemon=True)
+                    safety_thread.start()
                 else:
                     # Fallback: Print combined error and skip cycle
                     all_faults = self.state.fault_ids + self.state.tool_fault_ids
