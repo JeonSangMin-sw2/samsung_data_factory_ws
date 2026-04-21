@@ -39,8 +39,8 @@ class LeaderArm:
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
             'button_left', 'T_right', 'T_left', 'temperatures',
-            'fault_ids', 'tool_fault_ids', 'tool_warning_ids', 'current',
-            'tool_error_counts'
+            'fault_ids', 'joint_fault_ids', 'tool_fault_ids', 
+            'current', 'tool_error_counts', 'joint_error_counts'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -55,12 +55,11 @@ class LeaderArm:
             self.T_left = np.eye(4)
             self.temperatures = np.zeros(dof, dtype=np.float64)
             self.fault_ids = [] # 통신실패한 id
+            self.joint_fault_ids = []
             self.tool_fault_ids = [] # 통신실패한 tool id 
             self.current = np.zeros(dof, dtype=np.float64)
-            # 아래 변수는 현재 가지고있는 리더암의 우측 툴이 계속 상태가 안좋아서 통신끊기는 현상때문에 만들게 된 변수
-            # 툴(트리거, 버튼), 조인트 모두 중요하게 제어되어야 한다면 이 변수에 관련된 코드는 제거해야함 
-            self.tool_warning_ids = [] # MAX_TOOL_RETRIES변수 만큼 툴쪽 통신에러가 연속으로 발동되면 세이프티 발동. 그 경고된 id 
-            self.tool_error_counts = {} # 툴쪽 통신에러가 난 횟수
+            self.tool_error_counts = 0
+            self.joint_error_counts = 0
 
         # 메모리 접근충돌을 막기 위해 데이터를 복사해서 사용
         def copy(self):
@@ -77,10 +76,11 @@ class LeaderArm:
             snapshot.target_position = np.zeros(dof, dtype=np.float64)
             snapshot.temperatures = np.zeros(dof, dtype=np.float64)
             snapshot.fault_ids = []
+            snapshot.joint_fault_ids = []
             snapshot.tool_fault_ids = []
-            snapshot.tool_warning_ids = []
             snapshot.current = np.zeros(dof, dtype=np.float64)
-            snapshot.tool_error_counts = {}
+            snapshot.tool_error_counts = 0
+            snapshot.joint_error_counts = 0
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -96,10 +96,11 @@ class LeaderArm:
             target.target_position[:] = self.target_position
             target.temperatures[:] = self.temperatures
             target.fault_ids = list(self.fault_ids)
+            target.joint_fault_ids = list(self.joint_fault_ids)
             target.tool_fault_ids = list(self.tool_fault_ids)
-            target.tool_warning_ids = list(self.tool_warning_ids)
             target.current[:] = self.current
-            target.tool_error_counts = dict(self.tool_error_counts)
+            target.tool_error_counts = self.tool_error_counts
+            target.joint_error_counts = self.joint_error_counts
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -216,10 +217,9 @@ class LeaderArm:
         self.initialized = False
         self.operating_mode_init = False
         self.state = self.State(self.DOF)
-        self.control_callback = None
         self.model_path = URDF_PATH
         self.is_running = False
-        self.tool_error_counts = {tid: 0 for tid in self.tool_ids}
+        self.tool_error_counts = 0
         self.joint_error_counts = 0
         self.MAX_TOOL_RETRIES = 5 # 10 consecutive fails (~0.1s at 100Hz)
         self.MAX_JOINT_RETRIES = 5 # 10 consecutive fails (~0.1s at 100Hz)
@@ -405,11 +405,12 @@ class LeaderArm:
     def _ev_task(self):
         try:
             # 0. Reset faults for the current cycle
-            self.state.fault_ids = []
+            self.state.joint_fault_ids = []
             self.state.tool_fault_ids = []
-            self.state.tool_warning_ids = []
+            self.state.fault_ids = []
             
             # 1. Read Tool buttons (Auxiliary - Non-fatal until threshold)
+            all_tools_ok = True
             for tid in self.active_tool_ids:
                 res = self.bus.read_button_status(tid)
                 if res:
@@ -418,13 +419,15 @@ class LeaderArm:
                         self.state.button_right = bstate
                     else:
                         self.state.button_left = bstate
-                    self.tool_error_counts[tid] = 0 # Reset count on success
                 else:
-                    self.state.tool_warning_ids.append(tid) # Immediate warning for any slip
-                    logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts[tid]+1})")
-                    self.tool_error_counts[tid] += 1
-                    if self.tool_error_counts[tid] >= self.MAX_TOOL_RETRIES:
-                        self.state.tool_fault_ids.append(tid)
+                    all_tools_ok = False
+                    self.state.tool_fault_ids.append(tid)
+                    logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts+1})")
+            
+            if all_tools_ok:
+                self.tool_error_counts = 0
+            else:
+                self.tool_error_counts += 1
 
             # 2. Read Operating Modes (Joints Only - Critical)
             # Sequential check for immediate daisy-chain fault isolation.
@@ -437,19 +440,27 @@ class LeaderArm:
                             self.state.operating_mode[mid] = mode
                     else:
                         # FAILURE: Mark this ID and all downstream IDs as faulted.
-                        self.state.fault_ids = self.active_joint_ids[i:]
+                        self.state.joint_fault_ids = self.active_joint_ids[i:]
                         logging.warning(f"[LeaderArm] Communication break detected at ID {mid}. "
-                                        f"Marking {len(self.state.fault_ids)} IDs as faulted: {self.state.fault_ids}")
+                                        f"Marking {len(self.state.joint_fault_ids)} IDs as faulted: {self.state.joint_fault_ids}")
                         break
-            if self.state.fault_ids:
-                print(self.state.fault_ids)
+            
+            # 2-1. Joint Recovery Block
+            if self.state.joint_fault_ids:
                 active_ids = self.check_motor_status(verbose=False)
+                # Redefine joint_fault_ids based on actual current active IDs
+                self.state.joint_fault_ids = sorted(list(set(self.motor_ids) - (set(active_ids) & set(self.motor_ids))))
+                
+                # Update active joint/tool lists to include newly reconnected hardware
+                self.active_joint_ids = [mid for mid in self.motor_ids if mid in active_ids]
+                self.active_tool_ids = [tid for tid in self.tool_ids if tid in active_ids]
+                
                 self.joint_error_counts += 1
-                if len(active_ids) == self.DEVICE_COUNT:
-                    self.state.fault_ids = []
+                if not self.state.joint_fault_ids:
                     self.joint_error_counts = 0
                     self.recovery_sync_flag = True
-            if not self.state.fault_ids:
+            
+            if not self.state.joint_fault_ids:
                 # 3. Read Motor States
                 ms_list = self.bus.get_motor_states(self.motor_ids)
                 if ms_list:
@@ -461,42 +472,38 @@ class LeaderArm:
                             self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
                             self.state.temperatures[mid] = mstate.temperature
                 else:
-                    self.state.fault_ids = list(self.motor_ids)
+                    self.state.joint_fault_ids = list(self.motor_ids)
 
-                # 4. Read Goal Positions (Only if goal_pos_flag is True and no faults in Step 3)
-                if self.goal_pos_flag and not self.state.fault_ids:
+                # 4. Read Goal Positions (Only if goal_pos_flag is True and no joint faults in Step 3)
+                if self.goal_pos_flag and not self.state.joint_fault_ids:
                     temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
                     if temp_gp:
                         for mid, val in temp_gp:
                             if mid < self.DOF:
                                 self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
                     else:
-                        self.state.fault_ids = list(self.motor_ids)
+                        self.state.joint_fault_ids = list(self.motor_ids)
 
-            # 5. Compute Kinematics & Dynamics (Only if no faults in Step 4)
-            if not self.state.fault_ids:
-                # 5-1. Validate Input Data
-                if not np.all(np.isfinite(self.state.q_joint)):
-                    logging.error(f"[LeaderArm] ERROR: Non-finite joint data detected: {self.state.q_joint}")
-                    self.state.fault_ids = list(range(self.DOF))
-                else:
-                    # 5-2. Map Natural Order (R-then-L) to URDF Order (L-then-R)
-                    q_urdf = np.concatenate([self.state.q_joint[self.DOF//2:], self.state.q_joint[:self.DOF//2]])
-                    self.dyn_state.set_q(q_urdf)
-                    self.robot.compute_forward_kinematics(self.dyn_state)
-                    
-                    # Compute gravity and un-map back to Natural Order
-                    grav_urdf = self.robot.compute_gravity_term(self.dyn_state)
-                    self.state.gravity_term = np.concatenate([grav_urdf[self.DOF//2:], grav_urdf[:self.DOF//2]]) * self.TORQUE_SCALING
-                    
-                    self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
-                    self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
+            # 5. Compute Kinematics & Dynamics (Only if no joint faults in Step 4)
+            if not self.state.joint_fault_ids:
+                # 5-1. Map Natural Order (R-then-L) to URDF Order (L-then-R)
+                q_urdf = np.concatenate([self.state.q_joint[self.DOF//2:], self.state.q_joint[:self.DOF//2]])
+                self.dyn_state.set_q(q_urdf)
+                self.robot.compute_forward_kinematics(self.dyn_state)
+                
+                # Compute gravity and un-map back to Natural Order
+                grav_urdf = self.robot.compute_gravity_term(self.dyn_state)
+                self.state.gravity_term = np.concatenate([grav_urdf[self.DOF//2:], grav_urdf[:self.DOF//2]]) * self.TORQUE_SCALING
+                
+                self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
+                self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
+            
+            # 6. Consolidate Faults for Debugging/Monitoring (Final update for the cycle)
+            self.state.fault_ids = sorted(list(set(self.state.joint_fault_ids) | set(self.state.tool_fault_ids)))
 
-            # 6. Safety Check & Control
-            self.state.tool_error_counts = dict(self.tool_error_counts)
-
+            # 7. Safety Check & Control
             # Treat both joint faults and tool faults as critical safety events
-            if self.joint_error_counts > self.MAX_JOINT_RETRIES or self.state.tool_fault_ids:
+            if self.joint_error_counts > self.MAX_JOINT_RETRIES or self.tool_error_counts > self.MAX_TOOL_RETRIES:
                 if self.safety_function:
                     # Run safety_function in a separate thread to avoid deadlock
                     # (safety_function may call stop_control which joins ev thread)
@@ -505,9 +512,12 @@ class LeaderArm:
                     safety_thread.start()
                 else:
                     # Fallback: Print combined error and skip cycle
-                    all_faults = self.state.fault_ids + self.state.tool_fault_ids
-                    print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
+                    print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {self.state.fault_ids}) but no safety_function is registered! Skipping cycle.")
                 return
+            
+            # 8. Sync Counters to State for Monitoring
+            self.state.joint_error_counts = self.joint_error_counts
+            self.state.tool_error_counts = self.tool_error_counts
 
             if self.control_callback and self.ctrl_session_active and not self.ctrl_callback_busy:
                 self.ctrl_callback_busy = True
@@ -528,6 +538,8 @@ class LeaderArm:
     def _ctrl_task(self, state):
         try:
             user_input = self.control_callback(state)
+            if state.joint_fault_ids:
+                state.gravity_term = np.zeros(self.DOF)
             if user_input:
                 self._handle_control_input(user_input, state)
         except Exception as e:
@@ -560,7 +572,6 @@ class LeaderArm:
 
         # Push write task back to ev thread
         self.ev.push_task(lambda: self._write_task(changed_ids, changed_id_modes, id_torque, id_position))
-        self.ctrl_running_flag = False
 
     def _write_task(self, changed_ids, changed_id_modes, id_torque, id_position):
         try:
