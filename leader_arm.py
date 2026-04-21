@@ -435,7 +435,6 @@ class LeaderArm:
                 else:
                     self.state.fault_ids = list(self.active_joint_ids)
 
-            # 3-5. Joint Data Processing (Only if no faults detected in Step 2)
             if not self.state.fault_ids:
                 # 3. Read Motor States
                 ms_list = self.bus.get_motor_states(self.motor_ids)
