@@ -223,6 +223,7 @@ class LeaderArm:
         self.joint_error_counts = 0
         self.MAX_TOOL_RETRIES = 5 # 10 consecutive fails (~0.1s at 100Hz)
         self.MAX_JOINT_RETRIES = 5 # 10 consecutive fails (~0.1s at 100Hz)
+        self.recovery_sync_flag = False
 
     
     def SetControlPeriod(self, control_period):
@@ -447,6 +448,7 @@ class LeaderArm:
                 if len(active_ids) == self.DEVICE_COUNT:
                     self.state.fault_ids = []
                     self.joint_error_counts = 0
+                    self.recovery_sync_flag = True
             if not self.state.fault_ids:
                 # 3. Read Motor States
                 ms_list = self.bus.get_motor_states(self.motor_ids)
@@ -544,7 +546,7 @@ class LeaderArm:
         id_torque = []
 
         for i in range(self.DOF):
-            if state.operating_mode[i] != user_input.target_operating_mode[i]:
+            if self.recovery_sync_flag or state.operating_mode[i] != user_input.target_operating_mode[i]:
                 changed_ids.append(i)
                 changed_id_modes.append((i, user_input.target_operating_mode[i]))
             else:
@@ -553,6 +555,8 @@ class LeaderArm:
                 elif state.operating_mode[i] == rby.DynamixelBus.CurrentBasedPositionControlMode:
                     id_torque.append((i, user_input.target_torque[i]))
                     id_position.append((i, user_input.target_position[i]))
+        
+        self.recovery_sync_flag = False
 
         # Push write task back to ev thread
         self.ev.push_task(lambda: self._write_task(changed_ids, changed_id_modes, id_torque, id_position))

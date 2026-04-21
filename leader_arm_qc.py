@@ -1,28 +1,75 @@
+"""
+Leader Arm QC Test
+
+리더암이 스스로 N 번의 사이클 동안 미리 정의된 웨이포인트를 순회하며 움직입니다.
+또한 'capture' 모드를 통해 사용자가 리더암을 움직여 웨이포인트를 기록할 수 있습니다.
+
+주요 기능:
+  - 실시간 상태 모니터링 (teleop_with_leader_arm.py 참고)
+  - --mode capture: 버튼을 눌러 현재 자세를 기록하고 npz 파일로 저장
+  - --mode check: 기록된 웨이포인트를 Position 모드로 순회하며 품질 검사
+  - 로봇 쪽으로 제어 명령을 보내지 않음 (리더암만 움직임)
+  - 통신 장애 발생 시 12V 차단 safety 적용
+
+References:
+  - teleop_with_leader_arm.py : 실시간 모니터링 + position 모드 제어
+  - leader_arm_state_check.py : safety_function 패턴
+"""
+
 import os
-import rby1_sdk as rby
-import numpy as np
-import argparse
+import sys
 import time
-import datetime
 import signal
+import argparse
+import datetime
+import numpy as np
+import rby1_sdk as rby
 
 from leader_arm import LeaderArm
 
+
+# ============================================================
+# Configuration
+# ============================================================
+DEFAULT_CYCLES = 5
+SETTLE_THRESHOLD = 0.10       # rad (~5.7 deg) — 웨이포인트 도달 판정 임계값
+SETTLE_DURATION = 0.5         # sec — 임계값 이내로 유지해야 하는 시간
+WAYPOINT_TIMEOUT = 8.0        # sec — 한 웨이포인트에서 대기하는 최대 시간
+TORQUE_LIMIT = np.array([3.5, 3.5, 3.5, 1.5, 1.5, 1.5, 1.5] * 2)
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 POSITION_FILE = os.path.join(DATA_DIR, "position_list.npz")
-DEFAULT_WAIT_TIME = 2.0
-POSTURE_ERROR_THRESHOLD = 0.15 # ~8.6 degrees
 
-# 데이터를 텍스트 파일로 저장하는 클래스. 디버깅을 위함
-class File_Logger:
+
+# ============================================================
+# Default Waypoints (Backup)
+# ============================================================
+DEFAULT_WAYPOINTS = np.deg2rad([
+    # Waypoint 0: Home / Neutral
+    [   0, -20,  45,  -90,   0,  57,   0,    0,  20, -45,  -90,   0,  57,   0],
+    # Waypoint 1: 양팔 엘보우 굽힘
+    [   0, -20,  45, -120,   0,  57,   0,    0,  20, -45, -120,   0,  57,   0],
+    # Waypoint 2: 양팔 엘보우 펼침
+    [   0, -20,  45,  -70,   0,  57,   0,    0,  20, -45,  -70,   0,  57,   0],
+    # Waypoint 3: 손목 피치 변경
+    [   0, -20,  45,  -90,   0,  70,   0,    0,  20, -45,  -90,   0,  70,   0],
+    # Waypoint 4: 손목 피치 + 엘보우
+    [   0, -20,  45, -110,   0,  40,   0,    0,  20, -45, -110,   0,  40,   0],
+])
+
+
+# ============================================================
+# File Helpers
+# ============================================================
+class FileLogger:
     def __init__(self, filepath=None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         log_dir = os.path.join(base_dir, "log")
         os.makedirs(log_dir, exist_ok=True)
-        
-        if filepath is None or filepath == "leader_arm_qc_log.txt":
+
+        if filepath is None:
             now_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.filepath = os.path.join(log_dir, f"{now_str}_{filepath if filepath else 'log'}.txt")
+            self.filepath = os.path.join(log_dir, f"{now_str}_qc_test.txt")
         else:
             self.filepath = os.path.join(log_dir, filepath)
 
@@ -38,7 +85,7 @@ def save_positions(positions):
 
 def load_positions():
     if not os.path.exists(POSITION_FILE):
-        print(f"[Error] Position file not found: {POSITION_FILE}")
+        print(f"[Info] Using default waypoints (Position file not found: {POSITION_FILE})")
         return None
     data = np.load(POSITION_FILE)
     return data['positions']
@@ -52,20 +99,13 @@ def verify_saved_positions():
         print(f"[Verification] Total {len(positions)} positions verified.\n")
 
 
+# ============================================================
+# Main
+# ============================================================
+def main(address, model, num_cycles, mode):
+    logger = FileLogger()
 
-
-# 리더암의 자세를 저장하고, 그 자세로 움직이면서 각 모터들의 커넥터 상태 확인
-# args 에  mode란 파라미터 추가됨 (capture, check(default)).
-# capture 면 리더암 버튼누르면 포지션 저장됨. 종료 후 파일 npz 로 저장
-# check면 저장된 포지션으로 이동하면서 각 모터들의 커넥터 상태 확인
-# 모터 힘이 부족해서 목표위치까지 못가거나, 통신에러가 발생하면 세이프티 발동
-# 세이프티 : 2초동안 입력된 토크를 줄이는 방식으로 진행중(제대로 작동하는지는 잘 모르겠음)
-# 문제상황
-# 1. 모터를 set_target_position 함수로 움직이는데, 저장된 포지션대로 움직여주지 않음
-# 2. 모터 자체가 힘이 딸리면서 계속 목표지점으로 못간다고 뜨다보니 성능확인 어려움
-
-def main(address, model, mode):
-    logger = File_Logger()
+    # ===== SETUP ROBOT (12V 공급만 사용) =====
     robot = rby.create_robot(address, model)
     robot.connect()
 
@@ -77,66 +117,66 @@ def main(address, model, mode):
         print("Error: Failed to power on 12V.")
         exit(1)
 
+    # ===== LEADER ARM SETUP =====
     leader_arm = LeaderArm(control_period=0.01)
-    
+
+    if not leader_arm.initialize(verbose=True):
+        print("Failed to initialize Leader Arm")
+        exit(1)
+
+    if len(leader_arm.active_ids) != leader_arm.DEVICE_COUNT:
+        print(
+            f"Error: Mismatch in the number of devices detected. "
+            f"Expected {leader_arm.DEVICE_COUNT}, got {len(leader_arm.active_ids)}"
+        )
+        exit(1)
+
+    # ===== QC TEST STATE =====
     recorded_positions = []
     last_btn_state = {'right': 0, 'left': 0}
     
-    # Shared state for monitoring and debugging
-    check_status = {'is_ok': True, 'pos_idx': -1}
-    fault_registry = {} # Tracks {id: cumulative_error_count}
+    waypoints = load_positions()
+    if waypoints is None:
+        waypoints = DEFAULT_WAYPOINTS
 
-    def handler(signum, frame):
-        nonlocal recorded_positions
-        print("\n\n[System] Interrupt received. Finalizing session...")
-        if mode == 'capture':
-            if recorded_positions:
-                save_positions(recorded_positions)
-                verify_saved_positions()
-            else:
-                print("[Info] No positions were recorded in this session.")
-        
-        if leader_arm:
-            print("[System] Closing Leader Arm engine...")
-            leader_arm.close()
-        
-        print("[System] Powering off 12V and exiting.")
-        robot.power_off("12v")
-        time.sleep(0.5)
-        os._exit(0)
-    
-    signal.signal(signal.SIGINT, handler)
-    leader_arm.initialize(verbose=True)
-    
-    if len(leader_arm.active_ids) != leader_arm.DEVICE_COUNT:
-        print(f"Error: Mismatch in the number of devices detected. Expected {leader_arm.DEVICE_COUNT}, got {len(leader_arm.active_ids)}")
-        exit(1)
+    num_waypoints = len(waypoints)
+
+    qc_state = {
+        "current_wp_idx": 0,
+        "cycle_count": 0,
+        "total_cycles": num_cycles,
+        "settle_start": None,
+        "wp_start_time": time.time(),
+        "wp_reached": False,
+        "test_complete": False,
+        "wp_timeout_count": 0,
+        "total_wp_visited": 0,
+    }
+
+    session_stats = {
+        "total_warnings": 0,
+        "max_streak": 0,
+        "has_warned_once": False,
+        "ever_warned_ids": set(),
+    }
 
     def fmt(arr):
         return ", ".join([f"{x:7.3f}" for x in arr])
 
+    # =========================================================
+    # CONTROL CALLBACK
+    # =========================================================
     def control(state: LeaderArm.State):
-        nonlocal last_btn_state, fault_registry
-        
-        # In check/capture mode, skip printing if we detected a fault
-        if (mode == 'check' or mode == 'capture') and not check_status['is_ok']:
-            return LeaderArm.ControlInput()
+        nonlocal session_stats, qc_state, recorded_positions, last_btn_state
 
-        header = f"--- Leader Arm QC Monitor [{mode.upper()}] | {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]} ---"
-        line_idx = "index:        " + ", ".join([f"{i:7d}" for i in range(len(state.q_joint))])
-        line_q = f"q (rad):      {fmt(state.q_joint)}"
-        line_current = f"current (A):  {fmt(state.current)}"
-        line_temp = f"temp (C):     {fmt(state.temperatures)}"
-        line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
-        line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
-        line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
-
-        # Capture logic
+        # --------------------------------------------------
+        # 1. Capture 모드 로직
+        # --------------------------------------------------
         if mode == 'capture':
             curr_btn_right = state.button_right.button
             curr_btn_left = state.button_left.button
             
-            # Record on rising edge
+            # 버튼 누름(Rising Edge) 감지 시 기록
             if (curr_btn_right == 1 and last_btn_state['right'] == 0) or \
                (curr_btn_left == 1 and last_btn_state['left'] == 0):
                 recorded_positions.append(state.q_joint.copy())
@@ -145,138 +185,199 @@ def main(address, model, mode):
             last_btn_state['right'] = curr_btn_right
             last_btn_state['left'] = curr_btn_left
 
-        # Conditional Clearing and Printing
-        # print("\033[H\033[J", end="")  # Clear terminal and move cursor to top
-        print(header)
-        
-        if mode == 'check' and check_status['pos_idx'] >= 0:
-            print(f"Status:       position {check_status['pos_idx'] + 1} is ok")
-        
-        print(line_idx)
-        print(line_q)
-        print(line_current)
-        print(line_temp)
-        print(line_torque)
-        print(line_grav)
-        print(line_btn)
-        if mode == 'capture':
-            print(f"Captured:     {len(recorded_positions)}")
+            # 모니터링 출력 준비
+            header = f"--- QC Capture Mode | Recorded: {len(recorded_positions)} | {datetime.datetime.now().strftime('%H:%M:%S')}"
+            line_target = "" # Not applicable
+            line_error = "" # Not applicable
+            line_progress = f"CAPTURE | Use buttons to record | Ctrl+C to save {len(recorded_positions)} points"
 
-        # Log to file
-        logger.save(f"{header}\n{line_idx}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n")
-
-        input_data = LeaderArm.ControlInput()
-        
-        # 6. Control Logic by Mode
-        if mode == 'capture':
-            # Use CurrentControlMode with gravity compensation for easy manual movement
-            input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
-            input_data.target_torque = state.gravity_term
+        # --------------------------------------------------
+        # 2. Check 모드 (자동 순회) 로직
+        # --------------------------------------------------
         else:
-            # Check mode: Use CurrentBasedPositionControlMode for precise playback
-            # We use MAXIMUM_TORQUE as a limit to ensure it can overcome friction.
-            input_data.target_operating_mode.fill(rby.DynamixelBus.CurrentBasedPositionControlMode)
-            input_data.target_torque.fill(leader_arm.MAXIMUM_TORQUE)
-            
-        return input_data
+            if qc_state["test_complete"]:
+                ma_input = LeaderArm.ControlInput()
+                ma_input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
+                ma_input.target_torque = state.gravity_term
+                return ma_input
 
+            target_q = waypoints[qc_state["current_wp_idx"]]
+            pos_error = np.abs(state.q_joint - target_q)
+            max_error = np.max(pos_error)
+            now = time.time()
+
+            if max_error < SETTLE_THRESHOLD:
+                if qc_state["settle_start"] is None:
+                    qc_state["settle_start"] = now
+                elif (now - qc_state["settle_start"]) >= SETTLE_DURATION:
+                    qc_state["wp_reached"] = True
+            else:
+                qc_state["settle_start"] = None
+
+            wp_elapsed = now - qc_state["wp_start_time"]
+            wp_timed_out = wp_elapsed >= WAYPOINT_TIMEOUT
+
+            if qc_state["wp_reached"] or wp_timed_out:
+                if wp_timed_out and not qc_state["wp_reached"]:
+                    qc_state["wp_timeout_count"] += 1
+                qc_state["total_wp_visited"] += 1
+                qc_state["current_wp_idx"] += 1
+
+                if qc_state["current_wp_idx"] >= num_waypoints:
+                    qc_state["cycle_count"] += 1
+                    if qc_state["cycle_count"] >= qc_state["total_cycles"]:
+                        qc_state["test_complete"] = True
+                    else:
+                        qc_state["current_wp_idx"] = 0
+                
+                qc_state["settle_start"] = None
+                qc_state["wp_start_time"] = now
+                qc_state["wp_reached"] = False
+
+            header = (
+                f"--- QC Check Mode | Cycle {qc_state['cycle_count']+1}/{qc_state['total_cycles']}"
+                f" | WP {qc_state['current_wp_idx']+1}/{num_waypoints} | "
+                f"{datetime.datetime.now().strftime('%H:%M:%S')}"
+            )
+            progress_pct = (
+                (qc_state["cycle_count"] * num_waypoints + qc_state["current_wp_idx"])
+                / (qc_state["total_cycles"] * num_waypoints) * 100
+            ) if not qc_state["test_complete"] else 100.0
+
+            line_target  = f"target(rad):  {fmt(waypoints[min(qc_state['current_wp_idx'], num_waypoints-1)])}"
+            line_error   = f"error (rad):  {fmt(pos_error)}"
+            line_progress = (
+                f"PROGRESS | {progress_pct:5.1f}% | Visited: {qc_state['total_wp_visited']}"
+                f" | Timeouts: {qc_state['wp_timeout_count']}"
+                f" | MaxErr: {max_error:.4f} rad"
+            )
+
+        # --------------------------------------------------
+        # 3. 공통 통계 및 상태 출력
+        # --------------------------------------------------
+        if state.tool_warning_ids:
+            session_stats["total_warnings"] += 1
+            session_stats["has_warned_once"] = True
+            for tid in state.tool_warning_ids:
+                session_stats["ever_warned_ids"].add(tid)
+
+        current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
+        if current_max_streak > session_stats["max_streak"]:
+            session_stats["max_streak"] = current_max_streak
+
+        stats_part = f"(Tot: {session_stats['total_warnings']}, Max: {session_stats['max_streak']})"
+        if state.fault_ids or state.tool_fault_ids:
+            status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {state.fault_ids or state.tool_fault_ids} ] {stats_part}\033[0m"
+        elif state.tool_warning_ids:
+            status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ] {stats_part}\033[0m"
+        else:
+            status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
+
+        # Display (Only if not complete or in capture mode)
+        print("\033[H\033[J", end="", flush=True)
+        print(header, flush=True)
+        print("-" * 60, flush=True)
+        print(f"q (rad):      {fmt(state.q_joint)}", flush=True)
+        if line_target: print(line_target, flush=True)
+        if line_error: print(line_error, flush=True)
+        print(f"current (A):  {fmt(state.current)}", flush=True)
+        print(f"temp (C):     {fmt(state.temperatures)}", flush=True)
+        print(f"gravity (Nm): {fmt(state.gravity_term)}", flush=True)
+        print(f"BTN Status  | L: {state.button_left.button:1d} | R: {state.button_right.button:1d}", flush=True)
+        print(line_progress, flush=True)
+        print("\n" + status_line, flush=True)
+
+        # --------------------------------------------------
+        # 4. Control Input 생성
+        # --------------------------------------------------
+        ma_input = LeaderArm.ControlInput()
+        if mode == 'capture':
+            # 수동 조작을 위해 중력 보상만 적용
+            ma_input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
+            ma_input.target_torque = state.gravity_term
+        else:
+            # 자동 순회를 위해 위치 제어 적용
+            ma_input.target_operating_mode.fill(rby.DynamixelBus.CurrentBasedPositionControlMode)
+            ma_input.target_torque[:] = TORQUE_LIMIT
+            ma_input.target_position[:] = waypoints[min(qc_state["current_wp_idx"], num_waypoints - 1)]
+
+        return ma_input
+
+    # =========================================================
+    # SAFETY FUNCTION
+    # =========================================================
     def safety_function(state: LeaderArm.State):
-        nonlocal check_status, fault_registry
-        
-        check_status['is_ok'] = False
-        for mid in state.fault_ids:
-            fault_registry[mid] = fault_registry.get(mid, 0) + 1
-        
-        failed_list = sorted(list(state.fault_ids))
-        registry_summary = ", ".join([f"ID {mid}(x{fault_registry[mid]})" for mid in sorted(fault_registry.keys())])
-        
-        error_msg = f"\n\n[SAFETY TRIGGERED] Real-time communication failure!\nFailed IDs: {failed_list}\nCumulative registry: {registry_summary}\n"
-        print(error_msg)
+        all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
+        error_msg = f"\n\n\033[1;31m[CRITICAL ERROR] Communication failure on IDs: {all_faults}\033[0m\n"
+        print(error_msg, flush=True)
         logger.save(error_msg)
-        
-        print("\nACTION: Executing Soft Shutdown (Torque Fade-out for 2s)...")
-        
-        # Capture the last calculated gravity compensation
-        initial_torque = state.gravity_term.copy()
-        steps = 100
-        interval = 2.0 / steps
-        
-        for i in range(steps):
-            scale = 1.0 - (i / steps)
-            # Apply scaled torque to all motors that are still responsive
-            id_torque = []
-            for mid in range(leader_arm.DOF):
-                if mid not in state.fault_ids:
-                    id_torque.append((mid, initial_torque[mid] * scale))
-            
-            if id_torque:
-                leader_arm.bus.group_sync_write_send_torque(id_torque)
-            
-            time.sleep(interval)
 
-        print("Soft Shutdown complete. Powering off 12V.")
+        try:
+            leader_arm.DisableTorque()
+            robot.power_off("12v")
+            leader_arm.stop_control(torque_disable=False)
+        except:
+            pass
+            
+        print("Safety shutdown complete. Exiting.", flush=True)
+        os._exit(1)
+
+    # =========================================================
+    # SIGNAL HANDLER (Ctrl+C)
+    # =========================================================
+    def handler(signum, frame):
+        print("\n\nInterrupt received. Stopping...")
+        if mode == 'capture':
+            if recorded_positions:
+                save_positions(recorded_positions)
+                verify_saved_positions()
+            else:
+                print("[Info] No positions were recorded.")
+        
         if leader_arm:
             leader_arm.close()
-        robot.power_off("12v")
-        os._exit(1) # Immediate process termination
+        try:
+            robot.power_off("12v")
+        except:
+            pass
+        print("System shutdown complete.")
+        os._exit(0)
 
-    if mode == 'capture':
-        leader_arm.start_control(control, safety_function=safety_function)
-        print("Capture mode active. Press any button to record posture. Ctrl+C to save and exit.")
-        while True:
-            time.sleep(1)
-    else: # check mode
-        positions = load_positions()
-        if positions is not None:
-            # Start control loop with both control and safety callbacks
-            leader_arm.start_control(control, safety_function=safety_function)
-            
-            print(f"\n--- Starting Status Check Sequence ({len(positions)} postures) ---")
-            active_ids = leader_arm.active_ids
-            
-            for i, pos in enumerate(positions):
-                check_status['pos_idx'] = i
-                check_status['is_ok'] = True # Reset OK status for the new posture
-                
-                print(f"\n[Check {i+1}/{len(positions)}] Moving to posture...")
-                leader_arm.set_target_position(pos)
-                
-                # Wait for the posture stabilization period
-                time.sleep(DEFAULT_WAIT_TIME)
-                
-                # Check tracking error (verify if the arm actually reached the target)
-                state = leader_arm.state.copy()
-                error = np.abs(state.q_joint - pos)
-                failed_indices = np.where(error > POSTURE_ERROR_THRESHOLD)[0]
-                
-                if len(failed_indices) > 0:
-                    error_msg = f"\n\n[POSITIONING FAILURE] Motor(s) too weak to reach posture {i+1}!\n"
-                    for idx in failed_indices:
-                        error_msg += f"  - Joint ID {idx}: Error {error[idx]:.4f} rad (Target: {pos[idx]:.4f}, Current: {state.q_joint[idx]:.4f})\n"
-                    print(error_msg)
-                    logger.save(error_msg)
-                    
-                    # Trigger soft shutdown for safety
-                    safety_function(state)
-                    return
+    signal.signal(signal.SIGINT, handler)
 
-                print(".", end="", flush=True)
-            print("\n\n--- Status Check Sequence Completed Successfully ---")
-        else:
-            print("Check mode failed: No positions to check.")
+    # =========================================================
+    # START
+    # =========================================================
+    print(f"\n{'='*60}")
+    print(f"  Leader Arm QC Test | Mode: {mode.upper()}")
+    if mode == 'check':
+        print(f"  Cycles: {num_cycles} | Waypoints: {num_waypoints}")
+    else:
+        print(f"  Press buttons on Leader Arm to record positions.")
+    print(f"{'='*60}\n")
+    time.sleep(1)
 
-    leader_arm.close()
+    leader_arm.start_control(control, safety_function=safety_function)
+
+    while leader_arm.ctrl_session_active:
+        if mode == 'check' and qc_state["test_complete"]:
+            time.sleep(2)
+            break
+        time.sleep(0.5)
+
+    if mode == 'check':
+        print("\n\033[1;32m[QC TEST COMPLETE] All cycles finished successfully.\033[0m")
+    
+    leader_arm.stop_control(torque_disable=True)
     robot.power_off("12v")
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Leader Arm QC Monitor")
+    parser = argparse.ArgumentParser(description="Leader Arm QC Test")
     parser.add_argument("--address", type=str, required=True, help="Robot address")
-    parser.add_argument(
-        "--model", type=str, default="a", help="Robot Model Name (default: 'a')"
-    )
-    parser.add_argument(
-        "--mode", type=str, default="check", choices=["check", "capture"], help="Operation mode: check (default) or capture"
-    )
+    parser.add_argument("--model", type=str, default="a", help="Robot Model Name")
+    parser.add_argument("--cycles", type=int, default=DEFAULT_CYCLES, help="Number of test cycles")
+    parser.add_argument("--mode", type=str, default="check", choices=["check", "capture"], help="check or capture mode")
     args = parser.parse_args()
 
-    main(address=args.address, model=args.model, mode=args.mode)
+    main(address=args.address, model=args.model, num_cycles=args.cycles, mode=args.mode)
