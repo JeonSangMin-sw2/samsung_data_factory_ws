@@ -193,7 +193,7 @@ class LeaderArm:
                     self._tasks.task_done()
 
     # 리더암 클래스의 초기화 함수
-    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_temp=True, check_bus=True, check_transform=True):
+    def __init__(self, dev_name=LEADER_ARM_DEVICE_NAME, control_period=0.01, check_goal_position=True):
         self.dev_name = dev_name
         self.bus = rby.DynamixelBus(dev_name)
         self.ev = self.EventLoop()
@@ -203,9 +203,7 @@ class LeaderArm:
         self.ctrl_callback_busy = False   # Tracks if the callback is currently executing
         self.control_callback = None
         self.safety_function = None
-        self.temp_flag = check_temp
-        self.bus_flag = check_bus
-        self.transform_flag = check_transform
+        self.goal_pos_flag = check_goal_position
 
         self.torque_constant = np.array([1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043,
                                          1.6591, 1.6591, 1.6591, 1.3043, 1.3043, 1.3043, 1.3043])
@@ -227,15 +225,9 @@ class LeaderArm:
     
     def SetControlPeriod(self, control_period):
         self.control_period = control_period
-    
-    def check_temperature(self, enable: bool):
-        self.temp_flag = enable
 
-    def check_bus_state(self, enable: bool):
-        self.bus_flag = enable
-
-    def check_transform_state(self, enable: bool):
-        self.transform_flag = enable
+    def check_goal_position_state(self, enable: bool):
+        self.goal_pos_flag = enable
 
     def SetModelPath(self, model_path):
         self.model_path = model_path
@@ -428,51 +420,47 @@ class LeaderArm:
                         self.state.tool_fault_ids.append(tid)
 
             # 2. Read Operating Modes (Joints Only - Critical)
-            if self.bus_flag and self.active_joint_ids:
-                temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_joint_ids, True)
+            # Essential for disconnection detection, so we run this regardless of goal_pos_flag.
+            if self.active_joint_ids:
+                temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_joint_ids, False)
                 if temp_modes is not None:
                     if len(temp_modes) != len(self.active_joint_ids):
                         responded_ids = {mid for mid, _ in temp_modes}
                         self.state.fault_ids = [mid for mid in self.active_joint_ids if mid not in responded_ids]
                     else:
+                        # SUCCESS: fault_ids remains empty (reset at Step 0), allowing recovery
                         for mid, mode in temp_modes:
                             if mid < self.DOF:
                                 self.state.operating_mode[mid] = mode
                 else:
                     self.state.fault_ids = list(self.active_joint_ids)
 
-            # 3. Read Motor States (Joints Only - Critical)
+            # 3-5. Joint Data Processing (Only if no faults detected in Step 2)
             if not self.state.fault_ids:
+                # 3. Read Motor States
                 ms_list = self.bus.get_motor_states(self.motor_ids)
                 if ms_list:
-                    if len(ms_list) != len(self.motor_ids):
-                        responded_ids = {mid for mid, _ in ms_list}
-                        self.state.fault_ids = [mid for mid in self.motor_ids if mid not in responded_ids]
-                    else:
-                        for mid, mstate in ms_list:
-                            if mid < self.DOF:
-                                self.state.q_joint[mid] = mstate.position
-                                self.state.qvel_joint[mid] = mstate.velocity
-                                self.state.current[mid] = mstate.current
-                                self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
-                                if self.temp_flag:
-                                    self.state.temperatures[mid] = mstate.temperature
-                                else:
-                                    self.state.temperatures[mid] = 0.0
-                else:
-                    self.state.fault_ids = list(self.motor_ids)
-
-            # 4. Read Goal Positions
-            if self.bus_flag and not self.state.fault_ids:
-                temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
-                if temp_gp:
-                    for mid, val in temp_gp:
+                    for mid, mstate in ms_list:
                         if mid < self.DOF:
-                            self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
+                            self.state.q_joint[mid] = mstate.position
+                            self.state.qvel_joint[mid] = mstate.velocity
+                            self.state.current[mid] = mstate.current
+                            self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
+                            self.state.temperatures[mid] = mstate.temperature
                 else:
                     self.state.fault_ids = list(self.motor_ids)
 
-            # 5. Compute Kinematics & Dynamics
+                # 4. Read Goal Positions (Only if goal_pos_flag is True and no faults in Step 3)
+                if self.goal_pos_flag and not self.state.fault_ids:
+                    temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
+                    if temp_gp:
+                        for mid, val in temp_gp:
+                            if mid < self.DOF:
+                                self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
+                    else:
+                        self.state.fault_ids = list(self.motor_ids)
+
+            # 5. Compute Kinematics & Dynamics (Only if no faults in Step 4)
             if not self.state.fault_ids:
                 # 5-1. Validate Input Data
                 if not np.all(np.isfinite(self.state.q_joint)):
@@ -480,9 +468,6 @@ class LeaderArm:
                     self.state.fault_ids = list(range(self.DOF))
                 else:
                     # 5-2. Map Natural Order (R-then-L) to URDF Order (L-then-R)
-                    # URDF Order: J7..J13 (Left) then J0..J6 (Right)
-                    # Natural Order: 0..6 (Right) then 7..13 (Left)
-                    # Mapping: urdf[0..6] = q_joint[7..13], urdf[7..13] = q_joint[0..6]
                     q_urdf = np.concatenate([self.state.q_joint[self.DOF//2:], self.state.q_joint[:self.DOF//2]])
                     self.dyn_state.set_q(q_urdf)
                     self.robot.compute_forward_kinematics(self.dyn_state)
