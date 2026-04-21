@@ -220,7 +220,9 @@ class LeaderArm:
         self.model_path = URDF_PATH
         self.is_running = False
         self.tool_error_counts = {tid: 0 for tid in self.tool_ids}
+        self.joint_error_counts = 0
         self.MAX_TOOL_RETRIES = 5 # 10 consecutive fails (~0.1s at 100Hz)
+        self.MAX_JOINT_RETRIES = 5 # 10 consecutive fails (~0.1s at 100Hz)
 
     
     def SetControlPeriod(self, control_period):
@@ -306,6 +308,10 @@ class LeaderArm:
 
     def DisableTorque(self):
         self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
+
+    def set_max_retries(self, max_tool_retries = 5, max_joint_retries = 1):
+        self.MAX_TOOL_RETRIES = max_tool_retries
+        self.MAX_JOINT_RETRIES = max_joint_retries
 
     # qc를 위해 자세들을 입력해서 모터를 움직이는 코드
     def set_target_position(self, q_target, goal_current=0.5):
@@ -436,7 +442,11 @@ class LeaderArm:
                         break
             if self.state.fault_ids:
                 print(self.state.fault_ids)
-                self.check_motor_status()
+                active_ids = self.check_motor_status(verbose=False)
+                self.joint_error_counts += 1
+                if len(active_ids) == self.DEVICE_COUNT:
+                    self.state.fault_ids = []
+                    self.joint_error_counts = 0
             if not self.state.fault_ids:
                 # 3. Read Motor States
                 ms_list = self.bus.get_motor_states(self.motor_ids)
@@ -484,18 +494,18 @@ class LeaderArm:
             self.state.tool_error_counts = dict(self.tool_error_counts)
 
             # Treat both joint faults and tool faults as critical safety events
-            # if self.state.fault_ids or self.state.tool_fault_ids:
-            #     if self.safety_function:
-            #         # Run safety_function in a separate thread to avoid deadlock
-            #         # (safety_function may call stop_control which joins ev thread)
-            #         fault_state = self.state.copy()
-            #         safety_thread = threading.Thread(target=self.safety_function, args=(fault_state,), daemon=True)
-            #         safety_thread.start()
-            #     else:
-            #         # Fallback: Print combined error and skip cycle
-            #         all_faults = self.state.fault_ids + self.state.tool_fault_ids
-            #         print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
-            #     return
+            if self.joint_error_counts > self.MAX_JOINT_RETRIES or self.state.tool_fault_ids:
+                if self.safety_function:
+                    # Run safety_function in a separate thread to avoid deadlock
+                    # (safety_function may call stop_control which joins ev thread)
+                    fault_state = self.state.copy()
+                    safety_thread = threading.Thread(target=self.safety_function, args=(fault_state,), daemon=True)
+                    safety_thread.start()
+                else:
+                    # Fallback: Print combined error and skip cycle
+                    all_faults = self.state.fault_ids + self.state.tool_fault_ids
+                    print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
+                return
 
             if self.control_callback and self.ctrl_session_active and not self.ctrl_callback_busy:
                 self.ctrl_callback_busy = True
