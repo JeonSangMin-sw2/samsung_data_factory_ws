@@ -44,6 +44,7 @@ def main(address, model):
         exit(1)
 
     leader_arm = LeaderArm(control_period=0.01)
+    leader_arm.set_max_retries(max_tool_retries=5, max_joint_retries=1)
     
     if not leader_arm.initialize(verbose=True):
         print("Failed to initialize Leader Arm")
@@ -72,9 +73,8 @@ def main(address, model):
     def control(state: LeaderArm.State):
         nonlocal session_stats
         if state.fault_ids or state.tool_fault_ids:
-            print(state.fault_ids)
-            print(state.tool_fault_ids)
-            
+            print(f"Fault IDs: {state.fault_ids}")
+            print(f"Tool Fault IDs: {state.tool_fault_ids}")
         else:
             # Update statistics
             if state.tool_warning_ids:
