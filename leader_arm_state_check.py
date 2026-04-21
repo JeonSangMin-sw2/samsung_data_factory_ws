@@ -71,10 +71,13 @@ def main(address, model):
     # 2. 중력보상값 모터에 입력
     # 3. 통신문제(조인트가 문제발생, 혹은 버튼 트리거 관련 신호가 5번 연속으로 문제생길경우) 발생 시 12v 공급 차단
     def control(state: LeaderArm.State):
+        input = LeaderArm.ControlInput()
         nonlocal session_stats
         if state.fault_ids or state.tool_fault_ids:
             print(f"Fault IDs: {state.fault_ids}")
             print(f"Tool Fault IDs: {state.tool_fault_ids}")
+            input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
+            input.target_torque = np.zeros(14)
         else:
             # Update statistics
             if state.tool_warning_ids:
@@ -129,8 +132,6 @@ def main(address, model):
 
             # Log to file
             logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{status_line}\n")
-
-            input = LeaderArm.ControlInput()
 
             input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
             input.target_torque = state.gravity_term
