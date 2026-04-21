@@ -433,7 +433,7 @@ class LeaderArm:
                     all_tools_ok = False
                     self.state.tool_fault_ids.append(tid)
                     # Increment history (Tools start after DOF joints: 0x80->14, 0x81->15)
-                    self.fault_ids_history[tid - 0x80 + self.DOF] += 1
+                    self.state.fault_ids_history[tid - 0x80 + self.DOF] += 1
                     logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts+1})")
             
             if all_tools_ok:
@@ -504,7 +504,7 @@ class LeaderArm:
                 # Record recently detected joint faults to history before re-pinging (optional: could also record after cleanup)
                 for fid in self.state.joint_fault_ids:
                     if fid < self.DOF:
-                        self.fault_ids_history[fid] += 1
+                        self.state.fault_ids_history[fid] += 1
                 
                 active_ids = self.check_motor_status(verbose=False)
                 # Redefine joint_fault_ids based on actual current active IDs
