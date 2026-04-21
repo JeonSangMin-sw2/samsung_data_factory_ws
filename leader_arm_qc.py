@@ -242,19 +242,6 @@ def main(address, model, num_cycles, mode):
                 f" | MaxErr: {max_error:.4f} rad"
             )
 
-        # --------------------------------------------------
-        # 3. 공통 통계 및 상태 출력
-        # --------------------------------------------------
-        current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
-        if current_max_streak > session_stats["max_streak"]:
-            session_stats["max_streak"] = current_max_streak
-
-        stats_part = f"(Tot: {session_stats['total_warnings']}, Max: {session_stats['max_streak']})"
-        if state.fault_ids or state.tool_fault_ids:
-            status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {state.fault_ids or state.tool_fault_ids} ] {stats_part}\033[0m"
-        else:
-            status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
-
         # Display (Only if not complete or in capture mode)
         print("\033[H\033[J", end="", flush=True)
         print(header, flush=True)
@@ -269,7 +256,7 @@ def main(address, model, num_cycles, mode):
         print(f"fault id: {state.fault_ids}", flush=True)
         print(line_progress, flush=True)
 
-        print("\n" + status_line, flush=True)
+        # print("\n" + status_line, flush=True)
 
         # --------------------------------------------------
         # 4. Control Input 생성
