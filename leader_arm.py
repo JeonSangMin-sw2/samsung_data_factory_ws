@@ -420,21 +420,20 @@ class LeaderArm:
                         self.state.tool_fault_ids.append(tid)
 
             # 2. Read Operating Modes (Joints Only - Critical)
-            # Essential for disconnection detection, so we run this regardless of goal_pos_flag.
+            # Sequential check for immediate daisy-chain fault isolation.
             if self.active_joint_ids:
-                temp_modes = self.bus.group_fast_sync_read_operating_mode(self.active_joint_ids, False)
-                print(temp_modes)
-                if temp_modes is not None:
-                    if len(temp_modes) != len(self.active_joint_ids):
-                        responded_ids = {mid for mid, _ in temp_modes}
-                        self.state.fault_ids = [mid for mid in self.active_joint_ids if mid not in responded_ids]
+                for i, mid in enumerate(self.active_joint_ids):
+                    # Check each ID individually to pinpoint the first break in the chain.
+                    mode = self.bus.read_operating_mode(mid, False)
+                    if mode is not None:
+                        if mid < self.DOF:
+                            self.state.operating_mode[mid] = mode
                     else:
-                        # SUCCESS: fault_ids remains empty (reset at Step 0), allowing recovery
-                        for mid, mode in temp_modes:
-                            if mid < self.DOF:
-                                self.state.operating_mode[mid] = mode
-                else:
-                    self.state.fault_ids = list(self.active_joint_ids)
+                        # FAILURE: Mark this ID and all downstream IDs as faulted.
+                        self.state.fault_ids = self.active_joint_ids[i:]
+                        logging.warning(f"[LeaderArm] Communication break detected at ID {mid}. "
+                                        f"Marking {len(self.state.fault_ids)} IDs as faulted: {self.state.fault_ids}")
+                        break
 
             if not self.state.fault_ids:
                 # 3. Read Motor States

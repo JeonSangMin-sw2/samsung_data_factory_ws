@@ -105,17 +105,17 @@ def main(address, model):
         else:
             status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
 
-        # print("\033[H\033[J", end="", flush=True)  # Clear terminal and move cursor to top
-        # print(header, flush=True)
-        # print("-" * len(header), flush=True)
-        # print(line_idx, flush=True)
-        # print(line_q, flush=True)
-        # print(line_current, flush=True)
-        # print(line_temp, flush=True)
-        # print(line_torque, flush=True)
-        # print(line_grav, flush=True)
-        # print(line_btn, flush=True)
-        # print("\n" + status_line, flush=True)
+        print("\033[H\033[J", end="", flush=True)  # Clear terminal and move cursor to top
+        print(header, flush=True)
+        print("-" * len(header), flush=True)
+        print(line_idx, flush=True)
+        print(line_q, flush=True)
+        print(line_current, flush=True)
+        print(line_temp, flush=True)
+        print(line_torque, flush=True)
+        print(line_grav, flush=True)
+        print(line_btn, flush=True)
+        print("\n" + status_line, flush=True)
 
         # Tool Warning
         if state.tool_fault_ids:
