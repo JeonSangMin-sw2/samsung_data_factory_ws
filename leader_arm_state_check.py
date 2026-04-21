@@ -75,7 +75,7 @@ def main(address, model):
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
         line_fault = f"Fault IDs:    {state.fault_ids}, (check time : {state.check_status_duration})"
-        line_history = f"Fault count:   {state.fault_ids_history.tolist()}"
+        line_history = f"Fault count:   {fmt(state.fault_ids_history)}"
         
         # 5. Status & Alarm Section
         if state.fault_ids:
