@@ -408,6 +408,7 @@ class LeaderArm:
             self.state.joint_fault_ids = []
             self.state.tool_fault_ids = []
             self.state.fault_ids = []
+            self.state.gravity_term.fill(0.0) # Zero out for safety if read fails
             
             # 1. Read Tool buttons (Auxiliary - Non-fatal until threshold)
             all_tools_ok = True
@@ -445,20 +446,6 @@ class LeaderArm:
                                         f"Marking {len(self.state.joint_fault_ids)} IDs as faulted: {self.state.joint_fault_ids}")
                         break
             
-            # 2-1. Joint Recovery Block
-            if self.state.joint_fault_ids:
-                active_ids = self.check_motor_status(verbose=False)
-                # Redefine joint_fault_ids based on actual current active IDs
-                self.state.joint_fault_ids = sorted(list(set(self.motor_ids) - (set(active_ids) & set(self.motor_ids))))
-                
-                # Update active joint/tool lists to include newly reconnected hardware
-                self.active_joint_ids = [mid for mid in self.motor_ids if mid in active_ids]
-                self.active_tool_ids = [tid for tid in self.tool_ids if tid in active_ids]
-                
-                self.joint_error_counts += 1
-                if not self.state.joint_fault_ids:
-                    self.joint_error_counts = 0
-                    self.recovery_sync_flag = True
             
             if not self.state.joint_fault_ids:
                 # 3. Read Motor States
@@ -498,7 +485,22 @@ class LeaderArm:
                 self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
                 self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
             
-            # 6. Consolidate Faults for Debugging/Monitoring (Final update for the cycle)
+            # 6. Joint Recovery & Fault Consolidation
+            if self.state.joint_fault_ids:
+                active_ids = self.check_motor_status(verbose=False)
+                # Redefine joint_fault_ids based on actual current active IDs
+                self.state.joint_fault_ids = sorted(list(set(self.motor_ids) - (set(active_ids) & set(self.motor_ids))))
+                
+                # Update active joint/tool lists to include newly reconnected hardware
+                self.active_joint_ids = [mid for mid in self.motor_ids if mid in active_ids]
+                self.active_tool_ids = [tid for tid in self.tool_ids if tid in active_ids]
+                
+                self.joint_error_counts += 1
+                if not self.state.joint_fault_ids:
+                    self.joint_error_counts = 0
+                    self.recovery_sync_flag = True
+            
+            # Consolidate Faults for Debugging/Monitoring (Final update for the cycle)
             self.state.fault_ids = sorted(list(set(self.state.joint_fault_ids) | set(self.state.tool_fault_ids)))
 
             # 7. Safety Check & Control
@@ -537,9 +539,9 @@ class LeaderArm:
     # 유저가 정의한 콜백 함수를 실행하는 테스크
     def _ctrl_task(self, state):
         try:
-            user_input = self.control_callback(state)
             if state.joint_fault_ids:
                 state.gravity_term = np.zeros(self.DOF)
+            user_input = self.control_callback(state)
             if user_input:
                 self._handle_control_input(user_input, state)
         except Exception as e:
