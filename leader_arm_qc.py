@@ -1,13 +1,13 @@
 """
 Leader Arm QC Test
 
-리더암이 스스로 N 번의 사이클 동안 미리 정의된 웨이포인트를 순회하며 움직입니다.
-또한 'capture' 모드를 통해 사용자가 리더암을 움직여 웨이포인트를 기록할 수 있습니다.
+리더암이 스스로 N 번의 사이클 동안 저장된 position을 순회하며 움직입니다.
+또한 'capture' 모드를 통해 사용자가 리더암을 움직여 position을 기록할 수 있습니다.
 
 주요 기능:
   - 실시간 상태 모니터링 (teleop_with_leader_arm.py 참고)
   - --mode capture: 버튼을 눌러 현재 자세를 기록하고 npz 파일로 저장
-  - --mode check: 기록된 웨이포인트를 Position 모드로 순회하며 품질 검사
+  - --mode check: 기록된 position을 Position 모드로 순회하며 품질 검사
   - 로봇 쪽으로 제어 명령을 보내지 않음 (리더암만 움직임)
   - 통신 장애 발생 시 12V 차단 safety 적용
 
@@ -17,7 +17,6 @@ References:
 """
 
 import os
-import sys
 import time
 import signal
 import argparse
@@ -32,30 +31,14 @@ from leader_arm import LeaderArm
 # Configuration
 # ============================================================
 DEFAULT_CYCLES = 5
-SETTLE_THRESHOLD = 0.10       # rad (~5.7 deg) — 웨이포인트 도달 판정 임계값
+SETTLE_THRESHOLD = 0.10       # rad (~5.7 deg) — position 도달 판정 임계값
 SETTLE_DURATION = 0.5         # sec — 임계값 이내로 유지해야 하는 시간
-WAYPOINT_TIMEOUT = 8.0        # sec — 한 웨이포인트에서 대기하는 최대 시간
-TORQUE_LIMIT = np.array([3.5, 3.5, 3.5, 1.5, 1.5, 1.5, 1.5] * 2)
+POSITION_TIMEOUT = 3        # sec — 한 position에서 대기하는 최대 시간
+TORQUE_LIMIT = np.array([1.5, 1.5, 1.5, 1.5, 0.6, 0.6, 0.6] * 2)
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 POSITION_FILE = os.path.join(DATA_DIR, "position_list.npz")
-
-
-# ============================================================
-# Default Waypoints (Backup)
-# ============================================================
-DEFAULT_WAYPOINTS = np.deg2rad([
-    # Waypoint 0: Home / Neutral
-    [   0, -20,  45,  -90,   0,  57,   0,    0,  20, -45,  -90,   0,  57,   0],
-    # Waypoint 1: 양팔 엘보우 굽힘
-    [   0, -20,  45, -120,   0,  57,   0,    0,  20, -45, -120,   0,  57,   0],
-    # Waypoint 2: 양팔 엘보우 펼침
-    [   0, -20,  45,  -70,   0,  57,   0,    0,  20, -45,  -70,   0,  57,   0],
-    # Waypoint 3: 손목 피치 변경
-    [   0, -20,  45,  -90,   0,  70,   0,    0,  20, -45,  -90,   0,  70,   0],
-    # Waypoint 4: 손목 피치 + 엘보우
-    [   0, -20,  45, -110,   0,  40,   0,    0,  20, -45, -110,   0,  40,   0],
-])
+NPZ_VALID_DOF = LeaderArm.DOF
 
 
 # ============================================================
@@ -85,10 +68,23 @@ def save_positions(positions):
 
 def load_positions():
     if not os.path.exists(POSITION_FILE):
-        print(f"[Info] Using default waypoints (Position file not found: {POSITION_FILE})")
-        return None
-    data = np.load(POSITION_FILE)
-    return data['positions']
+        raise FileNotFoundError(f"Position file not found: {POSITION_FILE}")
+
+    with np.load(POSITION_FILE) as data:
+        raw_positions = np.asarray(data['positions'], dtype=np.float64)
+
+    if raw_positions.ndim == 1:
+        raw_positions = raw_positions.reshape(1, -1)
+
+    if raw_positions.shape[1] < NPZ_VALID_DOF:
+        raise ValueError(
+            f"Invalid position data shape {raw_positions.shape}: "
+            f"expected at least {NPZ_VALID_DOF} columns"
+        )
+    if raw_positions.shape[0] == 0:
+        raise ValueError("Position file does not contain any positions")
+
+    return raw_positions[:, :NPZ_VALID_DOF].copy()
 
 def verify_saved_positions():
     positions = load_positions()
@@ -105,6 +101,9 @@ def verify_saved_positions():
 def main(address, model, num_cycles, mode):
     logger = FileLogger()
 
+    positions = load_positions() if mode == 'check' else None
+    num_positions = len(positions) if positions is not None else 0
+
     # ===== SETUP ROBOT (12V 공급만 사용) =====
     robot = rby.create_robot(address, model)
     robot.connect()
@@ -119,6 +118,7 @@ def main(address, model, num_cycles, mode):
 
     # ===== LEADER ARM SETUP =====
     leader_arm = LeaderArm(control_period=0.01)
+    leader_arm.set_max_retries(max_tool_retries=100, max_joint_retries=100)
 
     if not leader_arm.initialize(verbose=True):
         print("Failed to initialize Leader Arm")
@@ -134,30 +134,22 @@ def main(address, model, num_cycles, mode):
     # ===== QC TEST STATE =====
     recorded_positions = []
     last_btn_state = {'right': 0, 'left': 0}
-    
-    waypoints = load_positions()
-    if waypoints is None:
-        waypoints = DEFAULT_WAYPOINTS
-
-    num_waypoints = len(waypoints)
 
     qc_state = {
-        "current_wp_idx": 0,
+        "current_pos_idx": 0,
         "cycle_count": 0,
         "total_cycles": num_cycles,
         "settle_start": None,
-        "wp_start_time": time.time(),
-        "wp_reached": False,
+        "pos_start_time": time.time(),
+        "pos_reached": False,
         "test_complete": False,
-        "wp_timeout_count": 0,
-        "total_wp_visited": 0,
+        "pos_timeout_count": 0,
+        "total_pos_visited": 0,
     }
 
     session_stats = {
         "total_warnings": 0,
         "max_streak": 0,
-        "has_warned_once": False,
-        "ever_warned_ids": set(),
     }
 
     def fmt(arr):
@@ -167,8 +159,6 @@ def main(address, model, num_cycles, mode):
     # CONTROL CALLBACK
     # =========================================================
     def control(state: LeaderArm.State):
-        nonlocal session_stats, qc_state, recorded_positions, last_btn_state
-
         # --------------------------------------------------
         # 1. Capture 모드 로직
         # --------------------------------------------------
@@ -190,7 +180,7 @@ def main(address, model, num_cycles, mode):
             line_target = "" # Not applicable
             line_error = "" # Not applicable
             line_progress = f"CAPTURE | Use buttons to record | Ctrl+C to save {len(recorded_positions)} points"
-
+            line_fault_id = f"fault_ids: {state.fault_ids}"
         # --------------------------------------------------
         # 2. Check 모드 (자동 순회) 로직
         # --------------------------------------------------
@@ -201,7 +191,7 @@ def main(address, model, num_cycles, mode):
                 ma_input.target_torque = state.gravity_term
                 return ma_input
 
-            target_q = waypoints[qc_state["current_wp_idx"]]
+            target_q = positions[qc_state["current_pos_idx"]]
             pos_error = np.abs(state.q_joint - target_q)
             max_error = np.max(pos_error)
             now = time.time()
@@ -210,57 +200,51 @@ def main(address, model, num_cycles, mode):
                 if qc_state["settle_start"] is None:
                     qc_state["settle_start"] = now
                 elif (now - qc_state["settle_start"]) >= SETTLE_DURATION:
-                    qc_state["wp_reached"] = True
+                    qc_state["pos_reached"] = True
             else:
                 qc_state["settle_start"] = None
 
-            wp_elapsed = now - qc_state["wp_start_time"]
-            wp_timed_out = wp_elapsed >= WAYPOINT_TIMEOUT
+            pos_elapsed = now - qc_state["pos_start_time"]
+            pos_timed_out = pos_elapsed >= POSITION_TIMEOUT
 
-            if qc_state["wp_reached"] or wp_timed_out:
-                if wp_timed_out and not qc_state["wp_reached"]:
-                    qc_state["wp_timeout_count"] += 1
-                qc_state["total_wp_visited"] += 1
-                qc_state["current_wp_idx"] += 1
+            if qc_state["pos_reached"] or pos_timed_out:
+                if pos_timed_out and not qc_state["pos_reached"]:
+                    qc_state["pos_timeout_count"] += 1
+                qc_state["total_pos_visited"] += 1
+                qc_state["current_pos_idx"] += 1
 
-                if qc_state["current_wp_idx"] >= num_waypoints:
+                if qc_state["current_pos_idx"] >= num_positions:
                     qc_state["cycle_count"] += 1
                     if qc_state["cycle_count"] >= qc_state["total_cycles"]:
                         qc_state["test_complete"] = True
                     else:
-                        qc_state["current_wp_idx"] = 0
+                        qc_state["current_pos_idx"] = 0
                 
                 qc_state["settle_start"] = None
-                qc_state["wp_start_time"] = now
-                qc_state["wp_reached"] = False
+                qc_state["pos_start_time"] = now
+                qc_state["pos_reached"] = False
 
             header = (
                 f"--- QC Check Mode | Cycle {qc_state['cycle_count']+1}/{qc_state['total_cycles']}"
-                f" | WP {qc_state['current_wp_idx']+1}/{num_waypoints} | "
+                f" | POS {qc_state['current_pos_idx']+1}/{num_positions} | "
                 f"{datetime.datetime.now().strftime('%H:%M:%S')}"
             )
             progress_pct = (
-                (qc_state["cycle_count"] * num_waypoints + qc_state["current_wp_idx"])
-                / (qc_state["total_cycles"] * num_waypoints) * 100
+                (qc_state["cycle_count"] * num_positions + qc_state["current_pos_idx"])
+                / (qc_state["total_cycles"] * num_positions) * 100
             ) if not qc_state["test_complete"] else 100.0
 
-            line_target  = f"target(rad):  {fmt(waypoints[min(qc_state['current_wp_idx'], num_waypoints-1)])}"
+            line_target  = f"target(rad):  {fmt(positions[min(qc_state['current_pos_idx'], num_positions-1)])}"
             line_error   = f"error (rad):  {fmt(pos_error)}"
             line_progress = (
-                f"PROGRESS | {progress_pct:5.1f}% | Visited: {qc_state['total_wp_visited']}"
-                f" | Timeouts: {qc_state['wp_timeout_count']}"
+                f"PROGRESS | {progress_pct:5.1f}% | Visited: {qc_state['total_pos_visited']}"
+                f" | Timeouts: {qc_state['pos_timeout_count']}"
                 f" | MaxErr: {max_error:.4f} rad"
             )
 
         # --------------------------------------------------
         # 3. 공통 통계 및 상태 출력
         # --------------------------------------------------
-        if state.tool_warning_ids:
-            session_stats["total_warnings"] += 1
-            session_stats["has_warned_once"] = True
-            for tid in state.tool_warning_ids:
-                session_stats["ever_warned_ids"].add(tid)
-
         current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
         if current_max_streak > session_stats["max_streak"]:
             session_stats["max_streak"] = current_max_streak
@@ -268,8 +252,6 @@ def main(address, model, num_cycles, mode):
         stats_part = f"(Tot: {session_stats['total_warnings']}, Max: {session_stats['max_streak']})"
         if state.fault_ids or state.tool_fault_ids:
             status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {state.fault_ids or state.tool_fault_ids} ] {stats_part}\033[0m"
-        elif state.tool_warning_ids:
-            status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ] {stats_part}\033[0m"
         else:
             status_line = f"\033[1;32mSTATUS: [ NORMAL ] {stats_part}\033[0m"
 
@@ -284,7 +266,9 @@ def main(address, model, num_cycles, mode):
         print(f"temp (C):     {fmt(state.temperatures)}", flush=True)
         print(f"gravity (Nm): {fmt(state.gravity_term)}", flush=True)
         print(f"BTN Status  | L: {state.button_left.button:1d} | R: {state.button_right.button:1d}", flush=True)
+        print(f"fault id: {state.fault_ids}", flush=True)
         print(line_progress, flush=True)
+
         print("\n" + status_line, flush=True)
 
         # --------------------------------------------------
@@ -299,7 +283,7 @@ def main(address, model, num_cycles, mode):
             # 자동 순회를 위해 위치 제어 적용
             ma_input.target_operating_mode.fill(rby.DynamixelBus.CurrentBasedPositionControlMode)
             ma_input.target_torque[:] = TORQUE_LIMIT
-            ma_input.target_position[:] = waypoints[min(qc_state["current_wp_idx"], num_waypoints - 1)]
+            ma_input.target_position[:] = positions[min(qc_state["current_pos_idx"], num_positions - 1)]
 
         return ma_input
 
@@ -325,7 +309,7 @@ def main(address, model, num_cycles, mode):
     # =========================================================
     # SIGNAL HANDLER (Ctrl+C)
     # =========================================================
-    def handler(signum, frame):
+    def handler(_signum, _frame):
         print("\n\nInterrupt received. Stopping...")
         if mode == 'capture':
             if recorded_positions:
@@ -351,7 +335,7 @@ def main(address, model, num_cycles, mode):
     print(f"\n{'='*60}")
     print(f"  Leader Arm QC Test | Mode: {mode.upper()}")
     if mode == 'check':
-        print(f"  Cycles: {num_cycles} | Waypoints: {num_waypoints}")
+        print(f"  Cycles: {num_cycles} | Positions: {num_positions}")
     else:
         print(f"  Press buttons on Leader Arm to record positions.")
     print(f"{'='*60}\n")
