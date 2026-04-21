@@ -39,8 +39,8 @@ class LeaderArm:
             'q_joint', 'qvel_joint', 'torque_joint', 'gravity_term', 
             'operating_mode', 'target_position', 'button_right', 
             'button_left', 'T_right', 'T_left', 'temperatures',
-            'fault_ids', 'joint_fault_ids', 'tool_fault_ids', 
-            'current', 'tool_error_counts', 'joint_error_counts'
+            'fault_ids', 'joint_fault_ids', 'tool_fault_ids', 'current', 'tool_error_counts', 'joint_error_counts',
+            'check_status_duration'
         ]
         def __init__(self, dof=14):
             self.q_joint = np.zeros(dof, dtype=np.float64)
@@ -60,6 +60,7 @@ class LeaderArm:
             self.current = np.zeros(dof, dtype=np.float64)
             self.tool_error_counts = 0
             self.joint_error_counts = 0
+            self.check_status_duration = 0.0
 
         # 메모리 접근충돌을 막기 위해 데이터를 복사해서 사용
         def copy(self):
@@ -81,6 +82,7 @@ class LeaderArm:
             snapshot.current = np.zeros(dof, dtype=np.float64)
             snapshot.tool_error_counts = 0
             snapshot.joint_error_counts = 0
+            snapshot.check_status_duration = 0.0
             
             # Copy data into new arrays
             self.copy_to(snapshot)
@@ -101,6 +103,7 @@ class LeaderArm:
             target.current[:] = self.current
             target.tool_error_counts = self.tool_error_counts
             target.joint_error_counts = self.joint_error_counts
+            target.check_status_duration = self.check_status_duration
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
             target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
@@ -288,6 +291,7 @@ class LeaderArm:
         return self.active_ids
 
     def check_motor_status(self, verbose=True):
+        start_time = time.time()
         active_ids = []
         # Check Motor 0~13 and Tool Motor 0x80, 0x81
         self.motor_ids = list(range(self.DOF))
@@ -302,6 +306,7 @@ class LeaderArm:
                 if verbose and dev_id < self.DOF:
                     logging.warning(f"Dynamixel ID {dev_id} is NOT active")
         
+        self.state.check_status_duration = time.time() - start_time
         return active_ids
 
     def EnableTorque(self):

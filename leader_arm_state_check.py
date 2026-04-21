@@ -73,7 +73,7 @@ def main(address, model):
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
-        line_fault = f"Fault IDs:    {state.fault_ids}"
+        line_fault = f"Fault IDs:    {state.fault_ids}, (check time : {state.check_status_duration})"
         
         # 5. Status & Alarm Section
         if state.fault_ids:
