@@ -45,7 +45,7 @@ def main(address, model):
         exit(1)
 
     leader_arm = LeaderArm(control_period=0.01)
-    leader_arm.set_max_retries(max_tool_retries=5, max_joint_retries=1)
+    leader_arm.set_max_retries(max_tool_retries=100, max_joint_retries=100)
     
     if not leader_arm.initialize(verbose=True):
         print("Failed to initialize Leader Arm")
