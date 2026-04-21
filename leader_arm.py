@@ -404,11 +404,12 @@ class LeaderArm:
     # 데이터 읽는 테스크
     def _ev_task(self):
         try:
-            # 0. Reset faults for the current cycle
-            self.state.joint_fault_ids = []
+            # 0. Reset/Initialize faults for the current cycle
+            # joint_fault_ids initially contains all joints that are currently missing from the active list
+            self.state.joint_fault_ids = sorted(list(set(self.motor_ids) - set(self.active_joint_ids)))
             self.state.tool_fault_ids = []
-            self.state.fault_ids = []
-            self.state.gravity_term.fill(0.0) # Zero out for safety if read fails
+            self.state.fault_ids = list(self.state.joint_fault_ids) # Start with currently known joint faults
+            self.state.gravity_term.fill(0.0)
             
             # 1. Read Tool buttons (Auxiliary - Non-fatal until threshold)
             all_tools_ok = True
@@ -432,24 +433,25 @@ class LeaderArm:
 
             # 2. Read Operating Modes (Joints Only - Critical)
             # Sequential check for immediate daisy-chain fault isolation.
-            if self.active_joint_ids:
-                for i, mid in enumerate(self.active_joint_ids):
-                    # Check each ID individually to pinpoint the first break in the chain.
-                    mode = self.bus.read_operating_mode(mid, False)
-                    if mode is not None:
-                        if mid < self.DOF:
-                            self.state.operating_mode[mid] = mode
-                    else:
-                        # FAILURE: Mark this ID and all downstream IDs as faulted.
-                        self.state.joint_fault_ids = self.active_joint_ids[i:]
-                        logging.warning(f"[LeaderArm] Communication break detected at ID {mid}. "
-                                        f"Marking {len(self.state.joint_fault_ids)} IDs as faulted: {self.state.joint_fault_ids}")
-                        break
+            # We probe the full motor_ids list to find where the signal physically breaks.
+            for i, mid in enumerate(self.motor_ids):
+                # Check each ID individually to pinpoint the first break in the chain.
+                mode = self.bus.read_operating_mode(mid, False)
+                if mode is not None:
+                    if mid < self.DOF:
+                        self.state.operating_mode[mid] = mode
+                else:
+                    # FAILURE: Mark this ID and all downstream IDs as faulted.
+                    new_faults = self.motor_ids[i:]
+                    self.state.joint_fault_ids = sorted(list(set(self.state.joint_fault_ids) | set(new_faults)))
+                    logging.warning(f"[LeaderArm] Communication break detected at ID {mid}. "
+                                    f"Marking {len(new_faults)} IDs as faulted: {new_faults}")
+                    break
             
             
             if not self.state.joint_fault_ids:
-                # 3. Read Motor States
-                ms_list = self.bus.get_motor_states(self.motor_ids)
+                # 3. Read Motor States (Use active IDs to avoid bulk-read failure from missing hardware)
+                ms_list = self.bus.get_motor_states(self.active_joint_ids)
                 if ms_list:
                     for mid, mstate in ms_list:
                         if mid < self.DOF:
@@ -459,17 +461,18 @@ class LeaderArm:
                             self.state.torque_joint[mid] = mstate.current * self.torque_constant[mid]
                             self.state.temperatures[mid] = mstate.temperature
                 else:
-                    self.state.joint_fault_ids = list(self.motor_ids)
+                    # Fallback for bulk-read failure
+                    self.state.joint_fault_ids = sorted(list(set(self.state.joint_fault_ids) | set(self.active_joint_ids)))
 
                 # 4. Read Goal Positions (Only if goal_pos_flag is True and no joint faults in Step 3)
                 if self.goal_pos_flag and not self.state.joint_fault_ids:
-                    temp_gp = self.bus.group_fast_sync_read(self.motor_ids, rby.DynamixelBus.AddrGoalPosition, 4)
+                    temp_gp = self.bus.group_fast_sync_read(self.active_joint_ids, rby.DynamixelBus.AddrGoalPosition, 4)
                     if temp_gp:
                         for mid, val in temp_gp:
                             if mid < self.DOF:
                                 self.state.target_position[mid] = val / 4096.0 * 2.0 * np.pi
                     else:
-                        self.state.joint_fault_ids = list(self.motor_ids)
+                        self.state.joint_fault_ids = sorted(list(set(self.state.joint_fault_ids) | set(self.active_joint_ids)))
 
             # 5. Compute Kinematics & Dynamics (Only if no joint faults in Step 4)
             if not self.state.joint_fault_ids:
@@ -486,6 +489,7 @@ class LeaderArm:
                 self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
             
             # 6. Joint Recovery & Fault Consolidation
+            # Trigger recovery block if we have ANY joint faults (missing or newly failed)
             if self.state.joint_fault_ids:
                 active_ids = self.check_motor_status(verbose=False)
                 # Redefine joint_fault_ids based on actual current active IDs
@@ -560,15 +564,20 @@ class LeaderArm:
         id_torque = []
 
         for i in range(self.DOF):
+            # 1. Determine if a mode change or full recovery sync is needed
             if self.recovery_sync_flag or state.operating_mode[i] != user_input.target_operating_mode[i]:
                 changed_ids.append(i)
                 changed_id_modes.append((i, user_input.target_operating_mode[i]))
-            else:
-                if state.operating_mode[i] == rby.DynamixelBus.CurrentControlMode:
-                    id_torque.append((i, user_input.target_torque[i]))
-                elif state.operating_mode[i] == rby.DynamixelBus.CurrentBasedPositionControlMode:
-                    id_torque.append((i, user_input.target_torque[i]))
-                    id_position.append((i, user_input.target_position[i]))
+            
+            # 2. Always prepare target values (Torque/Position) for active control modes
+            # Note: Send values regardless of whether mode is changing this cycle; 
+            # the _write_task handles the sequencing (Mode/Torque Enable -> Values).
+            target_mode = user_input.target_operating_mode[i]
+            if target_mode == rby.DynamixelBus.CurrentControlMode:
+                id_torque.append((i, user_input.target_torque[i]))
+            elif target_mode == rby.DynamixelBus.CurrentBasedPositionControlMode:
+                id_torque.append((i, user_input.target_torque[i]))
+                id_position.append((i, user_input.target_position[i]))
         
         self.recovery_sync_flag = False
 
