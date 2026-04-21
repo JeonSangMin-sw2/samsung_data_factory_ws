@@ -434,7 +434,9 @@ class LeaderArm:
                         logging.warning(f"[LeaderArm] Communication break detected at ID {mid}. "
                                         f"Marking {len(self.state.fault_ids)} IDs as faulted: {self.state.fault_ids}")
                         break
-
+            if self.state.fault_ids:
+                print(self.state.fault_ids)
+                self.check_motor_status()
             if not self.state.fault_ids:
                 # 3. Read Motor States
                 ms_list = self.bus.get_motor_states(self.motor_ids)
@@ -482,18 +484,18 @@ class LeaderArm:
             self.state.tool_error_counts = dict(self.tool_error_counts)
 
             # Treat both joint faults and tool faults as critical safety events
-            if self.state.fault_ids or self.state.tool_fault_ids:
-                if self.safety_function:
-                    # Run safety_function in a separate thread to avoid deadlock
-                    # (safety_function may call stop_control which joins ev thread)
-                    fault_state = self.state.copy()
-                    safety_thread = threading.Thread(target=self.safety_function, args=(fault_state,), daemon=True)
-                    safety_thread.start()
-                else:
-                    # Fallback: Print combined error and skip cycle
-                    all_faults = self.state.fault_ids + self.state.tool_fault_ids
-                    print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
-                return
+            # if self.state.fault_ids or self.state.tool_fault_ids:
+            #     if self.safety_function:
+            #         # Run safety_function in a separate thread to avoid deadlock
+            #         # (safety_function may call stop_control which joins ev thread)
+            #         fault_state = self.state.copy()
+            #         safety_thread = threading.Thread(target=self.safety_function, args=(fault_state,), daemon=True)
+            #         safety_thread.start()
+            #     else:
+            #         # Fallback: Print combined error and skip cycle
+            #         all_faults = self.state.fault_ids + self.state.tool_fault_ids
+            #         print(f"[LeaderArm] ERROR: Hardware fault detected (IDs: {all_faults}) but no safety_function is registered! Skipping cycle.")
+            #     return
 
             if self.control_callback and self.ctrl_session_active and not self.ctrl_callback_busy:
                 self.ctrl_callback_busy = True
