@@ -560,15 +560,20 @@ class LeaderArm:
         id_torque = []
 
         for i in range(self.DOF):
+            # 1. Determine if a mode change or full recovery sync is needed
             if self.recovery_sync_flag or state.operating_mode[i] != user_input.target_operating_mode[i]:
                 changed_ids.append(i)
                 changed_id_modes.append((i, user_input.target_operating_mode[i]))
-            else:
-                if state.operating_mode[i] == rby.DynamixelBus.CurrentControlMode:
-                    id_torque.append((i, user_input.target_torque[i]))
-                elif state.operating_mode[i] == rby.DynamixelBus.CurrentBasedPositionControlMode:
-                    id_torque.append((i, user_input.target_torque[i]))
-                    id_position.append((i, user_input.target_position[i]))
+            
+            # 2. Always prepare target values (Torque/Position) for active control modes
+            # Note: Send values regardless of whether mode is changing this cycle; 
+            # the _write_task handles the sequencing (Mode/Torque Enable -> Values).
+            target_mode = user_input.target_operating_mode[i]
+            if target_mode == rby.DynamixelBus.CurrentControlMode:
+                id_torque.append((i, user_input.target_torque[i]))
+            elif target_mode == rby.DynamixelBus.CurrentBasedPositionControlMode:
+                id_torque.append((i, user_input.target_torque[i]))
+                id_position.append((i, user_input.target_position[i]))
         
         self.recovery_sync_flag = False
 
