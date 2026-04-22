@@ -307,8 +307,7 @@ class LeaderArm:
                     logging.info(f"Dynamixel ID {dev_id} is active")
             else:
                 if verbose and dev_id < self.DOF:
-                    logging.warning(f"Dynamixel ID {dev_id} is NOT active. Breaking chain.")
-                break
+                    logging.warning(f"Dynamixel ID {dev_id} is NOT active.")
         
         self.state.check_status_duration = time.time() - start_time
         return active_ids
