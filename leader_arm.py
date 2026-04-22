@@ -307,7 +307,8 @@ class LeaderArm:
                     logging.info(f"Dynamixel ID {dev_id} is active")
             else:
                 if verbose and dev_id < self.DOF:
-                    logging.warning(f"Dynamixel ID {dev_id} is NOT active")
+                    logging.warning(f"Dynamixel ID {dev_id} is NOT active. Breaking chain.")
+                break
         
         self.state.check_status_duration = time.time() - start_time
         return active_ids
@@ -413,14 +414,12 @@ class LeaderArm:
     def _ev_task(self):
         try:
             # 0. Reset/Initialize faults for the current cycle
-            # joint_fault_ids initially contains all joints that are currently missing from the active list
+            # joint_fault_ids and tool_fault_ids initially contain IDs that are missing from the active lists
             self.state.joint_fault_ids = sorted(list(set(self.motor_ids) - set(self.active_joint_ids)))
-            self.state.tool_fault_ids = []
-            self.state.fault_ids = list(self.state.joint_fault_ids) # Start with currently known joint faults
+            self.state.tool_fault_ids = sorted(list(set(self.tool_ids) - set(self.active_tool_ids)))
+            self.state.fault_ids = sorted(list(set(self.state.joint_fault_ids) | set(self.state.tool_fault_ids)))
             self.state.gravity_term.fill(0.0)
             
-            # 1. Read Tool buttons (Auxiliary - Non-fatal until threshold)
-            all_tools_ok = True
             for tid in self.active_tool_ids:
                 res = self.bus.read_button_status(tid)
                 if res:
@@ -430,13 +429,14 @@ class LeaderArm:
                     else:
                         self.state.button_left = bstate
                 else:
-                    all_tools_ok = False
                     self.state.tool_fault_ids.append(tid)
                     # Increment history (Tools start after DOF joints: 0x80->14, 0x81->15)
                     self.state.fault_ids_history[tid - 0x80 + self.DOF] += 1
                     logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts+1})")
             
-            if all_tools_ok:
+            self.state.tool_fault_ids = sorted(list(set(self.state.tool_fault_ids)))
+            
+            if not self.state.tool_fault_ids:
                 self.tool_error_counts = 0
             else:
                 self.tool_error_counts += 1
@@ -498,26 +498,34 @@ class LeaderArm:
                 self.state.T_right = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kRightLinkId)
                 self.state.T_left = self.robot.compute_transformation(self.dyn_state, self.kBaseLinkId, self.kLeftLinkId)
             
-            # 6. Joint Recovery & Fault Consolidation
-            # Trigger recovery block if we have ANY joint faults (missing or newly failed)
-            if self.state.joint_fault_ids:
-                # Record recently detected joint faults to history before re-pinging (optional: could also record after cleanup)
+            # 6. Hardware Recovery & Fault Consolidation
+            # Trigger recovery block if we have ANY joint or tool faults (missing or newly failed)
+            if self.state.joint_fault_ids or self.state.tool_fault_ids:
+                # Record recently detected faults to history before re-pinging
                 for fid in self.state.joint_fault_ids:
                     if fid < self.DOF:
                         self.state.fault_ids_history[fid] += 1
+                for fid in self.state.tool_fault_ids:
+                    if fid in self.tool_ids:
+                        self.state.fault_ids_history[fid - 0x80 + self.DOF] += 1
                 
                 active_ids = self.check_motor_status(verbose=False)
-                # Redefine joint_fault_ids based on actual current active IDs
+                # Redefine fault_ids based on actual current active IDs
                 self.state.joint_fault_ids = sorted(list(set(self.motor_ids) - (set(active_ids) & set(self.motor_ids))))
+                self.state.tool_fault_ids = sorted(list(set(self.tool_ids) - (set(active_ids) & set(self.tool_ids))))
                 
                 # Update active joint/tool lists to include newly reconnected hardware
                 self.active_joint_ids = [mid for mid in self.motor_ids if mid in active_ids]
                 self.active_tool_ids = [tid for tid in self.tool_ids if tid in active_ids]
                 
+                # Update counters
                 self.joint_error_counts += 1
                 if not self.state.joint_fault_ids:
                     self.joint_error_counts = 0
                     self.recovery_sync_flag = True
+                
+                if not self.state.tool_fault_ids:
+                    self.tool_error_counts = 0
             
             # Consolidate Faults for Debugging/Monitoring (Final update for the cycle)
             self.state.fault_ids = sorted(list(set(self.state.joint_fault_ids) | set(self.state.tool_fault_ids)))

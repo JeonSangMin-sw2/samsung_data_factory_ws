@@ -60,6 +60,9 @@ def main(address, model):
     def fmt(arr):
         return ", ".join([f"{x:7.3f}" for x in arr])
 
+    def fmt_int(arr):
+        return ", ".join([f"{int(x):7d}" for x in arr])
+
 
     # 사용자 정의함수
     # 1. 상태 모니터링
@@ -74,8 +77,11 @@ def main(address, model):
         line_torque = f"torque (Nm):  {fmt(state.torque_joint)}"
         line_grav = f"gravity (Nm): {fmt(state.gravity_term)}"
         line_btn = f"BTN   | L: {state.button_left.button:1d} TRG: {state.button_left.trigger:4d} | R: {state.button_right.button:1d} TRG: {state.button_right.trigger:4d}"
-        line_fault = f"Fault IDs:    {state.fault_ids}, (check time : {state.check_status_duration})"
-        line_history = f"Fault count:   {fmt(state.fault_ids_history)}"
+        line_fault = f"Fault IDs:    {state.fault_ids}, (check time : {state.check_status_duration * 1000.0:6.1f}ms)"
+        history_joints = state.fault_ids_history[:14]
+        history_tools = state.fault_ids_history[14:]
+        line_hist_j = f"Joint Fault:  {fmt_int(history_joints)}"
+        line_hist_t = f"Tool Fault:   0x80: {int(history_tools[0]):d} | 0x81: {int(history_tools[1]):d}"
         
         # 5. Status & Alarm Section
         if state.fault_ids:
@@ -94,11 +100,12 @@ def main(address, model):
         print(line_grav, flush=True)
         print(line_btn, flush=True)
         print(line_fault, flush=True)
-        print(line_history, flush=True)
+        print(line_hist_j, flush=True)
+        print(line_hist_t, flush=True)
         print("\n" + status_line, flush=True)
 
         # Log to file
-        logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{line_fault}\n{line_history}\n{status_line}\n")
+        logger.save(f"{header}\n{line_q}\n{line_current}\n{line_temp}\n{line_torque}\n{line_grav}\n{line_btn}\n{line_fault}\n{line_hist_j}\n{line_hist_t}\n{status_line}\n")
         
         input = LeaderArm.ControlInput()
         input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
