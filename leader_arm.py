@@ -28,7 +28,7 @@ class LeaderArm:
     kRightLinkId = 7
     kLeftLinkId = 14
 
-    class ButtonSnapshot: # 버튼 상태 구조체
+    class ButtonState: # 버튼 상태 구조체
         __slots__ = ['button', 'trigger']
         def __init__(self, b, t):
             self.button = b
@@ -109,8 +109,8 @@ class LeaderArm:
             target.fault_ids_history[:] = self.fault_ids_history
 
             # Handle button snapshots (always create a new frozen snapshot for the state)
-            target.button_right = LeaderArm.ButtonSnapshot(self.button_right.button, self.button_right.trigger)
-            target.button_left = LeaderArm.ButtonSnapshot(self.button_left.button, self.button_left.trigger)
+            target.button_right = LeaderArm.ButtonState(self.button_right.button, self.button_right.trigger)
+            target.button_left = LeaderArm.ButtonState(self.button_left.button, self.button_left.trigger)
 
             # Transformation matrices (4x4 numpy arrays)
             if target.T_right is not None:
