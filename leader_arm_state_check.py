@@ -80,8 +80,8 @@ def main(address, model):
         line_fault = f"Fault IDs:    {state.fault_ids}, (check time : {state.check_status_duration * 1000.0:6.1f}ms)"
         history_joints = state.fault_ids_history[:14]
         history_tools = state.fault_ids_history[14:]
-        line_hist_j = f"Joint Fault:  {fmt_int(history_joints)}"
-        line_hist_t = f"Tool Fault:   0x80: {int(history_tools[0]):d} | 0x81: {int(history_tools[1]):d}"
+        line_hist_j = f"Joint Fault count:  {fmt_int(history_joints)}"
+        line_hist_t = f"Tool Fault count:   right: {int(history_tools[0]):d} | left: {int(history_tools[1]):d}"
         
         # 5. Status & Alarm Section
         if state.fault_ids:
