@@ -119,7 +119,7 @@ class Gripper:
         counter = 0
         while direction < 2:
             self.bus.group_sync_write_send_torque(
-                [(dev_id, 0.5 * (1 if direction == 0 else -1)) for dev_id in [0, 1]]
+                [(dev_id, 0.3 * (1 if direction == 0 else -1)) for dev_id in [0, 1]]
             )
             rv = self.bus.group_fast_sync_read_encoder([0, 1])
             if rv is not None:
@@ -129,7 +129,7 @@ class Gripper:
             self.max_q = np.maximum(self.max_q, q)
             if np.array_equal(prev_q, q):
                 counter += 1
-            prev_q = q
+            prev_q = q.copy()
             if counter >= 30:
                 direction += 1
                 counter = 0
@@ -162,6 +162,7 @@ class Gripper:
         if not np.isfinite(self.min_q).all() or not np.isfinite(self.max_q).all():
             logging.error("Cannot set target. min_q or max_q is not valid.")
             return
+        normalized_q = np.clip(np.asarray(normalized_q, dtype=np.float64), 0.0, 1.0)
         if GRIPPER_DIRECTION:
             self.target_q = normalized_q * (self.max_q - self.min_q) + self.min_q
         else:
@@ -340,6 +341,7 @@ def main(address, model_name, power, servo, control_mode):
     left_q = None
     right_minimum_time = 1.0
     left_minimum_time = 1.0
+    last_collision_log_time = 0.0
 
     stream = robot.create_command_stream(priority=1)
     stream.send_command(
@@ -369,6 +371,7 @@ def main(address, model_name, power, servo, control_mode):
         nonlocal position_mode, right_q, left_q
         nonlocal right_minimum_time, left_minimum_time
         nonlocal session_stats
+        nonlocal last_collision_log_time
 
         if right_q is None:
             right_q = state.q_joint[0:7]
@@ -378,7 +381,7 @@ def main(address, model_name, power, servo, control_mode):
         # --------------------------------------------------
         # 1. Real-time Monitoring Display (from state_check)
         # --------------------------------------------------
-        current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
+        current_max_streak = max(state.joint_error_counts, state.tool_error_counts)
         if current_max_streak > session_stats["max_streak"]:
             session_stats["max_streak"] = current_max_streak
 
@@ -441,11 +444,11 @@ def main(address, model_name, power, servo, control_mode):
         # --------------------------------------------------
         # 2. Gripper Control
         # --------------------------------------------------
-        gripper.set_target(
-            np.array(
-                [state.button_right.trigger / 1000, state.button_left.trigger / 1000]
-            )
-        )
+        gripper_target = np.array(
+            [state.button_right.trigger, state.button_left.trigger],
+            dtype=np.float64,
+        ) / 1000.0
+        gripper.set_target(gripper_target)
 
         # --------------------------------------------------
         # 3. Master Arm Torque Calculation (from teleop)
@@ -494,15 +497,35 @@ def main(address, model_name, power, servo, control_mode):
         # --------------------------------------------------
         # 4. Build & Send Robot Command (from teleop)
         # --------------------------------------------------
-        q = robot_q.copy() if robot_q is not None else np.zeros(len(model.robot_joint_names))
+        if robot_q is None:
+            right_minimum_time = 0.8
+            left_minimum_time = 0.8
+            return ma_input
+
+        q = robot_q.copy()
         q[model.right_arm_idx] = right_q
         q[model.left_arm_idx] = left_q
         dyn_state.set_q(q)
         dyn_model.compute_forward_kinematics(dyn_state)
+        nearest_collision = dyn_model.detect_collisions_or_nearest_links(dyn_state, 1)[
+            0
+        ]
+        is_collision = nearest_collision.distance < 0.02
+
+        if is_collision and (state.button_right.button or state.button_left.button):
+            now = time.monotonic()
+            if now - last_collision_log_time >= 1.0:
+                warning_msg = (
+                    "[COLLISION BLOCK] Robot command blocked. "
+                    f"nearest distance: {nearest_collision.distance:.4f} m"
+                )
+                logging.warning(warning_msg)
+                logger.save(warning_msg)
+                last_collision_log_time = now
 
         rc = rby.BodyComponentBasedCommandBuilder()
 
-        if state.button_right.button:
+        if state.button_right.button and not is_collision:
             right_minimum_time -= Settings.master_arm_loop_period
             right_minimum_time = max(
                 right_minimum_time, Settings.master_arm_loop_period * 1.01
@@ -541,7 +564,7 @@ def main(address, model_name, power, servo, control_mode):
         else:
             right_minimum_time = 0.8
 
-        if state.button_left.button:
+        if state.button_left.button and not is_collision:
             left_minimum_time -= Settings.master_arm_loop_period
             left_minimum_time = max(
                 left_minimum_time, Settings.master_arm_loop_period * 1.01
