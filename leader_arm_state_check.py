@@ -173,6 +173,12 @@ def main(address, model):
         leader_arm.stop_control(torque_disable=True)
         print("Powering off 12V...")
         try:
+            if robot.get_control_manager_state().state == rby.ControlManagerState.State.Enabled:
+                print("Disabling control manager...")
+                robot.disable_control_manager()
+        except Exception:
+            pass
+        try:
             robot.power_off("12v")
         except:
             pass

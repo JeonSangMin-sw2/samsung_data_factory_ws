@@ -316,9 +316,6 @@ def main(address, model_name, power, servo, control_mode):
     # ===== MASTER ARM SETUP =====
     master_arm = LeaderArm(
         control_period=Settings.master_arm_loop_period,
-        check_temp=True,
-        check_bus=True,
-        check_transform=True,
     )
     active_ids = master_arm.initialize(verbose=True)
 
@@ -381,13 +378,6 @@ def main(address, model_name, power, servo, control_mode):
         # --------------------------------------------------
         # 1. Real-time Monitoring Display (from state_check)
         # --------------------------------------------------
-        # Update session statistics
-        if state.tool_warning_ids:
-            session_stats["total_warnings"] += 1
-            session_stats["has_warned_once"] = True
-            for tid in state.tool_warning_ids:
-                session_stats["ever_warned_ids"].add(tid)
-
         current_max_streak = max(state.tool_error_counts.values()) if state.tool_error_counts else 0
         if current_max_streak > session_stats["max_streak"]:
             session_stats["max_streak"] = current_max_streak
@@ -418,8 +408,6 @@ def main(address, model_name, power, servo, control_mode):
         if state.fault_ids or state.tool_fault_ids:
             all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
             status_line = f"\033[1;31mSTATUS: [ !! CRITICAL ALARM !! - FAILED IDs: {all_faults} ] {stats_part}\033[0m"
-        elif state.tool_warning_ids:
-            status_line = f"\033[1;33mSTATUS: [ WARNING - Comm jitter on IDs: {state.tool_warning_ids} ] {stats_part}\033[0m"
         elif session_stats["has_warned_once"]:
             status_line = f"\033[1;33mSTATUS: [ PAST WARNINGS DETECTED ] {stats_part}\033[0m"
         else:

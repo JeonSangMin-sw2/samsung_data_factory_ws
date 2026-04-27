@@ -35,6 +35,8 @@ SETTLE_THRESHOLD = 0.10       # rad (~5.7 deg) — position 도달 판정 임계
 SETTLE_DURATION = 0.5         # sec — 임계값 이내로 유지해야 하는 시간
 POSITION_TIMEOUT = 3        # sec — 한 position에서 대기하는 최대 시간
 TORQUE_LIMIT = np.array([1.5, 1.5, 1.5, 1.5, 0.6, 0.6, 0.6] * 2)
+RIGHT_ARM_DOF = LeaderArm.DOF // 2
+MIRROR_SIGN_FLIP_INDICES = np.array([1, 2, 4, 6])
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 POSITION_FILE = os.path.join(DATA_DIR, "position_list.npz")
@@ -93,6 +95,12 @@ def verify_saved_positions():
         for i, pos in enumerate(positions):
             print(f"  #{i+1:2d}: {', '.join([f'{x:7.3f}' for x in pos])}")
         print(f"[Verification] Total {len(positions)} positions verified.\n")
+
+def make_single_arm_reference_position(q_joint):
+    right_q = np.asarray(q_joint[:RIGHT_ARM_DOF], dtype=np.float64).copy()
+    mirrored_q = right_q.copy()
+    mirrored_q[MIRROR_SIGN_FLIP_INDICES] *= -1.0
+    return np.concatenate([right_q, mirrored_q])
 
 
 # ============================================================
@@ -166,10 +174,9 @@ def main(address, model, num_cycles, mode):
             curr_btn_right = state.button_right.button
             curr_btn_left = state.button_left.button
             
-            # 버튼 누름(Rising Edge) 감지 시 기록
-            if (curr_btn_right == 1 and last_btn_state['right'] == 0) or \
-               (curr_btn_left == 1 and last_btn_state['left'] == 0):
-                recorded_positions.append(state.q_joint.copy())
+            # 오른쪽 버튼 누름(Rising Edge) 감지 시 오른팔 기준 14-DOF reference 기록
+            if curr_btn_right == 1 and last_btn_state['right'] == 0:
+                recorded_positions.append(make_single_arm_reference_position(state.q_joint))
                 print(f"\n[Capture] Recorded position #{len(recorded_positions)}")
             
             last_btn_state['right'] = curr_btn_right
@@ -179,7 +186,7 @@ def main(address, model, num_cycles, mode):
             header = f"--- QC Capture Mode | Recorded: {len(recorded_positions)} | {datetime.datetime.now().strftime('%H:%M:%S')}"
             line_target = "" # Not applicable
             line_error = "" # Not applicable
-            line_progress = f"CAPTURE | Use buttons to record | Ctrl+C to save {len(recorded_positions)} points"
+            line_progress = f"CAPTURE | Use right button to record mirrored ref | Ctrl+C to save {len(recorded_positions)} points"
             line_fault_id = f"fault_ids: {state.fault_ids}"
         # --------------------------------------------------
         # 2. Check 모드 (자동 순회) 로직
@@ -338,6 +345,13 @@ def main(address, model, num_cycles, mode):
 
     if mode == 'check':
         print("\n\033[1;32m[QC TEST COMPLETE] All cycles finished successfully.\033[0m")
+    
+    try:
+        if robot.get_control_manager_state().state == rby.ControlManagerState.State.Enabled:
+            print("Disabling control manager...")
+            robot.disable_control_manager()
+    except Exception:
+        pass
     
     leader_arm.stop_control(torque_disable=True)
     robot.power_off("12v")
