@@ -6,7 +6,7 @@ Teleoperation with Real-time Monitoring & Safety
 
 References:
   - leader_arm_state_check.py : 실시간 모니터링 + safety_function
-  - leader_arm_teleop.py      : 텔레오퍼레이션 로직
+  - leader_arm_teleop_with_monitor.py      : 텔레오퍼레이션 로직
 """
 
 import rby1_sdk as rby

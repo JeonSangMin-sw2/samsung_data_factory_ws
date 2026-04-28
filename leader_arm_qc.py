@@ -12,8 +12,8 @@ Leader Arm QC Test
   - 통신 장애 발생 시 12V 차단 safety 적용
 
 References:
-  - teleop_with_leader_arm.py : 실시간 모니터링 + position 모드 제어
-  - leader_arm_state_check.py : safety_function 패턴
+  - leader_arm_teleop_with_monitor.py.py : 실시간 모니터링 + position 모드 제어
+  - leader_arm_state_check.py : 실시간 모니터링 + safety_function
 """
 
 import os
