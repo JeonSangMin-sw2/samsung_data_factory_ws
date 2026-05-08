@@ -409,22 +409,30 @@ class LeaderArm:
         # 3. Smooth stop if requested (Now safe from thread contention)
         if smooth_stop:
             try:
-                # Switch to Current Control Mode for all motors to apply gravity compensation directly
-                self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
-                self.bus.group_sync_write_operating_mode([(i, rby.DynamixelBus.CurrentControlMode) for i in self.motor_ids])
-                self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
+                # Use only active IDs to avoid communication timeouts on missing/failed hardware
+                targets = self.active_joint_ids if self.active_joint_ids else self.motor_ids
+                
+                # Switch to Current Control Mode
+                # We disable torque briefly to change the register, then re-enable with gravity compensation
+                self.bus.group_sync_write_torque_enable(targets, 0)
+                self.bus.group_sync_write_operating_mode([(i, rby.DynamixelBus.CurrentControlMode) for i in targets])
+                
+                # Inject initial gravity torque immediately before/during re-enable to prevent drop
+                initial_torque_cmd = [(mid, initial_gravity[mid]) for mid in targets]
+                self.bus.group_sync_write_send_torque(initial_torque_cmd)
+                self.bus.group_sync_write_torque_enable(targets, 1)
 
-                steps = 30 # More steps for even smoother ramp
-                for i in range(1, steps + 1):
+                steps = 30
+                for i in range(steps + 1): # Start from 0 to ensure full gravity is applied first
                     ratio = 1.0 - (i / steps)
                     target_torque = initial_gravity * ratio
-                    torque_cmd = [(mid, target_torque[mid]) for mid in self.motor_ids]
+                    torque_cmd = [(mid, target_torque[mid]) for mid in targets]
                     self.bus.group_sync_write_send_torque(torque_cmd)
                     time.sleep(0.1)
             except Exception as e:
-                logging.warning(f"[LeaderArm] Smooth stop failed: {e}")
+                logging.error(f"[LeaderArm] Smooth stop CRITICAL FAILURE: {e}")
 
-        # 4. Disable torque if requested
+        # 4. Disable torque if requested (Final safety)
         if torque_disable:
             self.DisableTorque()
 
