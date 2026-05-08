@@ -398,7 +398,18 @@ class LeaderArm:
 
         # 1. Capture current state for ramp-down
         # For a truly smooth stop, we capture the gravity compensation terms
+        # For a truly smooth stop, we capture the gravity compensation terms
         initial_gravity = self.state.gravity_term.copy()
+        
+        # Fallback: if gravity_term is still zero (e.g. error at startup), try a one-time computation
+        if np.all(initial_gravity == 0) and hasattr(self, 'robot'):
+            try:
+                q_urdf = np.concatenate([self.state.q_joint[self.DOF//2:], self.state.q_joint[:self.DOF//2]])
+                self.dyn_state.set_q(q_urdf)
+                grav_urdf = self.robot.compute_gravity_term(self.dyn_state)
+                initial_gravity = np.concatenate([grav_urdf[self.DOF//2:], grav_urdf[:self.DOF//2]]) * self.TORQUE_SCALING
+            except:
+                pass
 
         # 2. Shutdown background threads first to ensure exclusive bus access
         self.ctrl_session_active = False
