@@ -177,6 +177,9 @@ def main(address, model, num_cycles, mode):
 
     def fmt(arr):
         return ", ".join([f"{x:7.3f}" for x in arr])
+    
+    def fmt_int(arr):
+        return ", ".join([f"{int(x):7d}" for x in arr])
 
     # =========================================================
     # CONTROL CALLBACK
@@ -265,6 +268,7 @@ def main(address, model, num_cycles, mode):
             )
             history_joints = state.fault_ids_history[:14]
             history_tools = state.fault_ids_history[14:]
+
 
         # Display (Only if not complete or in capture mode)
         print("\033[H\033[J", end="", flush=True)
