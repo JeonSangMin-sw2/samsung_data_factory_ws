@@ -68,7 +68,10 @@ def save_positions(positions):
     np.savez(POSITION_FILE, positions=np.array(positions))
     print(f"\n[Info] Saved {len(positions)} positions to {POSITION_FILE}")
 
-def load_positions():
+def load_positions(default_flag=True):
+    if default_flag:
+        POSITION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_position_list.npz")
+    
     if not os.path.exists(POSITION_FILE):
         raise FileNotFoundError(f"Position file not found: {POSITION_FILE}")
 
@@ -89,7 +92,7 @@ def load_positions():
     return raw_positions[:, :NPZ_VALID_DOF].copy()
 
 def verify_saved_positions():
-    positions = load_positions()
+    positions = load_positions(default_flag=False)
     if positions is not None:
         print(f"\n[Verification] Reading from {POSITION_FILE}:")
         for i, pos in enumerate(positions):
@@ -109,7 +112,13 @@ def make_single_arm_reference_position(q_joint):
 def main(address, model, num_cycles, mode):
     logger = FileLogger()
 
-    positions = load_positions() if mode == 'check' else None
+    if mode == "custom":
+        positions = load_positions(default_flag=False)
+    elif mode == "capture":
+        positions = None
+    else: # mode == "check"
+        positions = load_positions(default_flag=True)
+
     num_positions = len(positions) if positions is not None else 0
 
     # ===== SETUP ROBOT (12V 공급만 사용) =====
@@ -120,13 +129,18 @@ def main(address, model, num_cycles, mode):
         print("Error: Robot connection failed.")
         exit(1)
 
+    if robot.get_control_manager_state().state != rby.ControlManagerState.State.Idle:
+        print("Disabling control manager...")
+        robot.disable_control_manager()
+        time.sleep(1)
+
     if not robot.power_on("12v"):
         print("Error: Failed to power on 12V.")
         exit(1)
 
     # ===== LEADER ARM SETUP =====
     leader_arm = LeaderArm(control_period=0.01)
-    leader_arm.set_max_retries(max_tool_retries=100, max_joint_retries=100)
+    leader_arm.set_max_retries(max_tool_retries=2, max_joint_retries=5)
 
     if not leader_arm.initialize(verbose=True):
         print("Failed to initialize Leader Arm")
@@ -269,6 +283,11 @@ def main(address, model, num_cycles, mode):
         # 4. Control Input 생성
         # --------------------------------------------------
         ma_input = LeaderArm.ControlInput()
+
+        # 관절 고장 감지 (0-6: Right, 7-13: Left)
+        right_fault = any(0 <= fid < 7 for fid in state.fault_ids)
+        left_fault = any(7 <= fid < 14 for fid in state.fault_ids)
+
         if mode == 'capture':
             # 수동 조작을 위해 중력 보상만 적용
             ma_input.target_operating_mode.fill(rby.DynamixelBus.CurrentControlMode)
@@ -278,6 +297,12 @@ def main(address, model, num_cycles, mode):
             ma_input.target_operating_mode.fill(rby.DynamixelBus.CurrentBasedPositionControlMode)
             ma_input.target_torque[:] = TORQUE_LIMIT
             ma_input.target_position[:] = positions[min(qc_state["current_pos_idx"], num_positions - 1)]
+
+            # 고장난 팔은 현재 위치로 고정 (다음 목표로 이동하지 않음)
+            if right_fault:
+                ma_input.target_position[0:7] = state.q_joint[0:7]
+            if left_fault:
+                ma_input.target_position[7:14] = state.q_joint[7:14]
 
         return ma_input
 
@@ -291,9 +316,9 @@ def main(address, model, num_cycles, mode):
         logger.save(error_msg)
 
         try:
-            leader_arm.DisableTorque()
+            leader_arm.stop_control(torque_disable=True, smooth_stop=True)
+            time.sleep(1)
             robot.power_off("12v")
-            leader_arm.stop_control(torque_disable=False)
         except:
             pass
             
@@ -315,6 +340,8 @@ def main(address, model, num_cycles, mode):
         if leader_arm:
             leader_arm.close()
         try:
+            robot.disable_control_manager()
+            time.sleep(1)
             robot.power_off("12v")
         except:
             pass
@@ -362,7 +389,7 @@ if __name__ == "__main__":
     parser.add_argument("--address", type=str, required=True, help="Robot address")
     parser.add_argument("--model", type=str, default="a", help="Robot Model Name")
     parser.add_argument("--cycles", type=int, default=DEFAULT_CYCLES, help="Number of test cycles")
-    parser.add_argument("--mode", type=str, default="check", choices=["check", "capture"], help="check or capture mode")
+    parser.add_argument("--mode", type=str, default="check", choices=["check","custom","capture"], help="check or capture mode")
     args = parser.parse_args()
 
     main(address=args.address, model=args.model, num_cycles=args.cycles, mode=args.mode)

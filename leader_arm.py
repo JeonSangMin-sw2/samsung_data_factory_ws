@@ -392,9 +392,27 @@ class LeaderArm:
         self.ev.push_cyclic_task(self._ev_task, self.control_period)
         return True
 
-    def stop_control(self, torque_disable=False):
+    def stop_control(self, torque_disable=False, smooth_stop=False):
         if not self.ctrl_session_active:
             return False
+
+        # 0. Smooth stop if requested (Reduce torque gradually)
+        if smooth_stop:
+            initial_current = self.state.current.copy()
+            # Deactivate control callback to prevent command conflicts during ramp-down
+            self.ctrl_session_active = False
+            
+            steps = 30
+            for i in range(1, steps + 1):
+                ratio = 1.0 - (i / steps)
+                target_current = initial_current * ratio
+                torque_cmd = [(mid, target_current[mid]) for mid in self.motor_ids]
+                try:
+                    self.bus.group_sync_write_send_torque(torque_cmd)
+                except Exception as e:
+                    logging.warning(f"[LeaderArm] Smooth stop failed: {e}")
+                    break
+                time.sleep(0.1)
 
         # 1. Disable torque first if requested (Highest priority)
         if torque_disable:
@@ -623,5 +641,5 @@ class LeaderArm:
                 self.safety_function(self.state)
             raise e
 
-    def close(self):
-        self.stop_control(torque_disable=True)
+    def close(self, smooth_stop=False):
+        self.stop_control(torque_disable=True, smooth_stop=smooth_stop)

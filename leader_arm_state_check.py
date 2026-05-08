@@ -41,6 +41,11 @@ def main(address, model):
         print("Error: Robot connection failed.")
         exit(1)
 
+    if robot.get_control_manager_state().state != rby.ControlManagerState.State.Idle:
+        print("Disabling control manager...")
+        robot.disable_control_manager()
+        time.sleep(1)
+
     if not robot.power_on("12v"):
         print("Error: Failed to power on 12V.")
         exit(1)
@@ -176,6 +181,7 @@ def main(address, model):
             if robot.get_control_manager_state().state == rby.ControlManagerState.State.Enabled:
                 print("Disabling control manager...")
                 robot.disable_control_manager()
+                time.sleep(1)
         except Exception:
             pass
         try:
