@@ -168,6 +168,7 @@ def main(address, model, num_cycles, mode):
         "test_complete": False,
         "pos_timeout_count": 0,
         "total_pos_visited": 0,
+        "fault_occurred": False,
     }
 
     session_stats = {
@@ -316,6 +317,10 @@ def main(address, model, num_cycles, mode):
             if left_fault:
                 ma_input.target_position[7:14] = state.q_joint[7:14]
 
+        # 고장 여부 기록
+        if state.fault_ids:
+            qc_state["fault_occurred"] = True
+
         return ma_input
 
     # =========================================================
@@ -383,7 +388,21 @@ def main(address, model, num_cycles, mode):
         time.sleep(0.5)
 
     if mode != 'capture':
-        print("\n\033[1;32m[QC TEST COMPLETE] All cycles finished successfully.\033[0m")
+        if qc_state["fault_occurred"] or qc_state["pos_timeout_count"] > 0:
+            print("\n\033[1;31m[QC TEST FAILED] Issues detected during test session.\033[0m")
+            print(f" - Total Timeouts: {qc_state['pos_timeout_count']}")
+            print(f" - Communication Faults Detected: {'YES' if qc_state['fault_occurred'] else 'NO'}")
+            
+            # 상세 통신 장애 통계 출력
+            history_joints = leader_arm.state.fault_ids_history[:14]
+            if np.any(history_joints > 0):
+                print(f" - Joint Fault Counts (ID 0-13): [{', '.join(map(str, history_joints))}]")
+            
+            history_tools = leader_arm.state.fault_ids_history[14:]
+            if np.any(history_tools > 0):
+                print(f" - Tool Fault Counts (R/L): {int(history_tools[0])} / {int(history_tools[1])}")
+        else:
+            print("\n\033[1;32m[QC TEST COMPLETE] All cycles finished successfully without faults.\033[0m")
     
     try:
         if robot.get_control_manager_state().state == rby.ControlManagerState.State.Enabled:

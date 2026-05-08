@@ -397,7 +397,8 @@ class LeaderArm:
             return False
 
         # 1. Capture current state for ramp-down
-        initial_current = self.state.current.copy()
+        # For a truly smooth stop, we capture the gravity compensation terms
+        initial_gravity = self.state.gravity_term.copy()
 
         # 2. Shutdown background threads first to ensure exclusive bus access
         self.ctrl_session_active = False
@@ -407,17 +408,21 @@ class LeaderArm:
 
         # 3. Smooth stop if requested (Now safe from thread contention)
         if smooth_stop:
-            steps = 30
-            for i in range(1, steps + 1):
-                ratio = 1.0 - (i / steps)
-                target_current = initial_current * ratio
-                torque_cmd = [(mid, target_current[mid]) for mid in self.motor_ids]
-                try:
+            try:
+                # Switch to Current Control Mode for all motors to apply gravity compensation directly
+                self.bus.group_sync_write_torque_enable(self.motor_ids, 0)
+                self.bus.group_sync_write_operating_mode([(i, rby.DynamixelBus.CurrentControlMode) for i in self.motor_ids])
+                self.bus.group_sync_write_torque_enable(self.motor_ids, 1)
+
+                steps = 30 # More steps for even smoother ramp
+                for i in range(1, steps + 1):
+                    ratio = 1.0 - (i / steps)
+                    target_torque = initial_gravity * ratio
+                    torque_cmd = [(mid, target_torque[mid]) for mid in self.motor_ids]
                     self.bus.group_sync_write_send_torque(torque_cmd)
-                except Exception as e:
-                    logging.warning(f"[LeaderArm] Smooth stop failed: {e}")
-                    break
-                time.sleep(0.1)
+                    time.sleep(0.1)
+            except Exception as e:
+                logging.warning(f"[LeaderArm] Smooth stop failed: {e}")
 
         # 4. Disable torque if requested
         if torque_disable:
