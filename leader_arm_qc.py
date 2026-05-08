@@ -424,7 +424,10 @@ def main(address, model, num_cycles, mode):
     # 정상 종료 경로
     with shutdown_lock:
         if shutdown_done:
-            return
+            # 만약 safety_function(데몬 쓰레드)이나 handler가 이미 종료를 진행 중이라면,
+            # 메인 쓰레드가 여기서 바로 종료되면 데몬 쓰레드가 죽어버리므로 기다려줘야 함.
+            while True:
+                time.sleep(1)
         shutdown_done = True
 
     try:
