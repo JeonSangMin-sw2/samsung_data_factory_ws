@@ -176,6 +176,10 @@ def main(address, model, num_cycles, mode):
         "max_streak": 0,
     }
 
+    # 중복 종료 방지를 위한 플래그 및 락
+    shutdown_lock = threading.Lock()
+    shutdown_done = False
+
     def fmt(arr):
         return ", ".join([f"{x:7.3f}" for x in arr])
     
@@ -327,6 +331,12 @@ def main(address, model, num_cycles, mode):
     # SAFETY FUNCTION
     # =========================================================
     def safety_function(state: LeaderArm.State):
+        nonlocal shutdown_done
+        with shutdown_lock:
+            if shutdown_done:
+                return
+            shutdown_done = True
+
         all_faults = sorted(list(state.fault_ids) + list(state.tool_fault_ids))
         error_msg = f"\n\n\033[1;31m[CRITICAL ERROR] Communication failure on IDs: {all_faults}\033[0m\n"
         print(error_msg, flush=True)
@@ -346,6 +356,12 @@ def main(address, model, num_cycles, mode):
     # SIGNAL HANDLER (Ctrl+C)
     # =========================================================
     def handler(_signum, _frame):
+        nonlocal shutdown_done
+        with shutdown_lock:
+            if shutdown_done:
+                return
+            shutdown_done = True
+
         print("\n\nInterrupt received. Stopping...")
         if mode == 'capture':
             if recorded_positions:
@@ -404,6 +420,12 @@ def main(address, model, num_cycles, mode):
         else:
             print("\n\033[1;32m[QC TEST COMPLETE] All cycles finished successfully without faults.\033[0m")
     
+    # 정상 종료 경로
+    with shutdown_lock:
+        if shutdown_done:
+            return
+        shutdown_done = True
+
     try:
         if robot.get_control_manager_state().state == rby.ControlManagerState.State.Enabled:
             print("Disabling control manager...")
