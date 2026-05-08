@@ -69,13 +69,14 @@ def save_positions(positions):
     print(f"\n[Info] Saved {len(positions)} positions to {POSITION_FILE}")
 
 def load_positions(default_flag=True):
+    file_path = POSITION_FILE
     if default_flag:
-        POSITION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_position_list.npz")
+        file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_position_list.npz")
     
-    if not os.path.exists(POSITION_FILE):
-        raise FileNotFoundError(f"Position file not found: {POSITION_FILE}")
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Position file not found: {file_path}")
 
-    with np.load(POSITION_FILE) as data:
+    with np.load(file_path) as data:
         raw_positions = np.asarray(data['positions'], dtype=np.float64)
 
     if raw_positions.ndim == 1:
