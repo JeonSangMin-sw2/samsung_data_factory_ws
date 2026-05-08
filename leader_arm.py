@@ -396,12 +396,17 @@ class LeaderArm:
         if not self.ctrl_session_active:
             return False
 
-        # 0. Smooth stop if requested (Reduce torque gradually)
+        # 1. Capture current state for ramp-down
+        initial_current = self.state.current.copy()
+
+        # 2. Shutdown background threads first to ensure exclusive bus access
+        self.ctrl_session_active = False
+        self.is_running = False
+        self.ev.stop()
+        self.ctrl_ev.stop()
+
+        # 3. Smooth stop if requested (Now safe from thread contention)
         if smooth_stop:
-            initial_current = self.state.current.copy()
-            # Deactivate control callback to prevent command conflicts during ramp-down
-            self.ctrl_session_active = False
-            
             steps = 30
             for i in range(1, steps + 1):
                 ratio = 1.0 - (i / steps)
@@ -414,15 +419,9 @@ class LeaderArm:
                     break
                 time.sleep(0.1)
 
-        # 1. Disable torque first if requested (Highest priority)
+        # 4. Disable torque if requested
         if torque_disable:
             self.DisableTorque()
-
-        # 2. Shutdown threads
-        self.ctrl_session_active = False
-        self.is_running = False
-        self.ev.stop()
-        self.ctrl_ev.stop()
 
         self.control_callback = None
         return True
