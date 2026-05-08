@@ -32,8 +32,8 @@ from leader_arm import LeaderArm
 # ============================================================
 DEFAULT_CYCLES = 5
 SETTLE_THRESHOLD = 0.10       # rad (~5.7 deg) — position 도달 판정 임계값
-SETTLE_DURATION = 0.5         # sec — 임계값 이내로 유지해야 하는 시간
-POSITION_TIMEOUT = 3        # sec — 한 position에서 대기하는 최대 시간
+SETTLE_DURATION = 1.0         # sec — 임계값 이내로 유지해야 하는 시간
+POSITION_TIMEOUT = 5        # sec — 한 position에서 대기하는 최대 시간
 TORQUE_LIMIT = np.array([1.5, 1.5, 1.5, 1.5, 0.6, 0.6, 0.6] * 2)
 RIGHT_ARM_DOF = LeaderArm.DOF // 2
 MIRROR_SIGN_FLIP_INDICES = np.array([1, 2, 4, 6])
