@@ -409,6 +409,7 @@ class LeaderArm:
         # 3. Smooth stop if requested (Now safe from thread contention)
         if smooth_stop:
             try:
+                print("Smooth stop started")
                 # Use only active IDs to avoid communication timeouts on missing/failed hardware
                 targets = self.active_joint_ids if self.active_joint_ids else self.motor_ids
                 
@@ -429,6 +430,7 @@ class LeaderArm:
                     torque_cmd = [(mid, target_torque[mid]) for mid in targets]
                     self.bus.group_sync_write_send_torque(torque_cmd)
                     time.sleep(0.1)
+                print("Smooth stop finished")
             except Exception as e:
                 logging.error(f"[LeaderArm] Smooth stop CRITICAL FAILURE: {e}")
 
