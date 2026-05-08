@@ -449,7 +449,7 @@ class LeaderArm:
                     self.state.tool_fault_ids.append(tid)
                     # Increment history (Tools start after DOF joints: 0x80->14, 0x81->15)
                     self.state.fault_ids_history[tid - 0x80 + self.DOF] += 1
-                    logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts+1})")
+                    # logging.warning(f"Tool ID {tid} skipped communication step (Count: {self.tool_error_counts+1})")
             
             self.state.tool_fault_ids = sorted(list(set(self.state.tool_fault_ids)))
             

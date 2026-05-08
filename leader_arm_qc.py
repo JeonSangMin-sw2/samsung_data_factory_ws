@@ -263,6 +263,8 @@ def main(address, model, num_cycles, mode):
                 f" | Timeouts: {qc_state['pos_timeout_count']}"
                 f" | MaxErr: {max_error:.4f} rad"
             )
+            history_joints = state.fault_ids_history[:14]
+            history_tools = state.fault_ids_history[14:]
 
         # Display (Only if not complete or in capture mode)
         print("\033[H\033[J", end="", flush=True)
@@ -276,6 +278,10 @@ def main(address, model, num_cycles, mode):
         print(f"gravity (Nm): {fmt(state.gravity_term)}", flush=True)
         print(f"BTN Status  | L: {state.button_left.button:1d} | R: {state.button_right.button:1d}", flush=True)
         print(f"fault id: {state.fault_ids}", flush=True)
+        line_hist_j = f"Joint Fault count:  {fmt_int(history_joints)}"
+        line_hist_t = f"Tool Fault count:   right: {int(history_tools[0]):d} | left: {int(history_tools[1]):d}"
+        print(line_hist_j, flush=True)
+        print(line_hist_t, flush=True)
         print(line_progress, flush=True)
 
         # print("\n" + status_line, flush=True)
@@ -366,12 +372,12 @@ def main(address, model, num_cycles, mode):
     leader_arm.start_control(control, safety_function=safety_function)
 
     while leader_arm.ctrl_session_active:
-        if mode == 'check' and qc_state["test_complete"]:
+        if mode != 'capture' and qc_state["test_complete"]:
             time.sleep(2)
             break
         time.sleep(0.5)
 
-    if mode == 'check':
+    if mode != 'capture':
         print("\n\033[1;32m[QC TEST COMPLETE] All cycles finished successfully.\033[0m")
     
     try:
@@ -381,7 +387,7 @@ def main(address, model, num_cycles, mode):
     except Exception:
         pass
     
-    leader_arm.stop_control(torque_disable=True)
+    leader_arm.stop_control(torque_disable=True,smooth_stop=True)
     robot.power_off("12v")
 
 
