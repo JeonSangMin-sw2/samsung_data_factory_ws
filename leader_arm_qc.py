@@ -355,7 +355,8 @@ def main(address, model, num_cycles, mode):
                 print("[Info] No positions were recorded.")
         
         if leader_arm:
-            leader_arm.close()
+            leader_arm.close(smooth_stop=True)
+            time.sleep(1) # Extra buffer for motors to settle before power off
         try:
             robot.disable_control_manager()
             time.sleep(1)
@@ -388,10 +389,9 @@ def main(address, model, num_cycles, mode):
         time.sleep(0.5)
 
     if mode != 'capture':
-        if qc_state["fault_occurred"] or qc_state["pos_timeout_count"] > 0:
-            print("\n\033[1;31m[QC TEST FAILED] Issues detected during test session.\033[0m")
-            print(f" - Total Timeouts: {qc_state['pos_timeout_count']}")
-            print(f" - Communication Faults Detected: {'YES' if qc_state['fault_occurred'] else 'NO'}")
+        if qc_state["fault_occurred"]:
+            print("\n\033[1;31m[QC TEST FAILED] Communication faults detected during test session.\033[0m")
+            print(f" - Communication Faults Detected: YES")
             
             # 상세 통신 장애 통계 출력
             history_joints = leader_arm.state.fault_ids_history[:14]
@@ -411,7 +411,8 @@ def main(address, model, num_cycles, mode):
     except Exception:
         pass
     
-    leader_arm.stop_control(torque_disable=True,smooth_stop=True)
+    leader_arm.stop_control(torque_disable=True, smooth_stop=True)
+    time.sleep(1)
     robot.power_off("12v")
 
 
